@@ -2,42 +2,26 @@
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 
 type Position = { x: number; y: number }
+type Bomb = Position & { id: number; explodeAt: number }
+type Explosion = Position & { id: number; endAt: number }
 type GameStatus = 'ready' | 'playing' | 'paused' | 'over' | 'reward'
-type Language =
-  | 'zhTw'
-  | 'en'
-  | 'ja'
-  | 'ko'
-  | 'es'
-  | 'fr'
-  | 'de'
-  | 'pt'
-  | 'ru'
-  | 'ar'
-  | 'hi'
-  | 'id'
-  | 'vi'
-  | 'th'
-
-type RewardKey =
-  | 'life1'
-  | 'life2'
-  | 'shorten'
-  | 'removeObstacle'
-  | 'clearBomb'
-  | 'slow'
-  | 'shield'
-  | 'hideObstacle'
+type Language = 'zhTw' | 'en' | 'ja' | 'ko' | 'es' | 'fr' | 'de' | 'pt' | 'ru' | 'ar' | 'hi' | 'id' | 'vi' | 'th'
+type RewardKey = 'life1' | 'life2' | 'shorten' | 'removeObstacle' | 'clearBomb' | 'slow' | 'shield' | 'hideObstacle'
+type SnakeSkin = 'neon' | 'snake' | 'dragon' | 'robot' | 'cat' | 'avatar'
+type GameMode = 'classic' | 'portal' | 'time' | 'treasure' | 'survival'
 
 const boardSize = 20
-const baseSpeed = 140
 const skillDurationMs = 10000
 const respawnProtectionMs = 900
+const timeModeStartMs = 60000
+const explosionDurationMs = 850
 
 const snake = ref<Position[]>([{ x: 10, y: 10 }])
 const food = ref<Position>({ x: 5, y: 5 })
+const goldenFood = ref<Position | null>(null)
 const obstacles = ref<Position[]>([])
-const bombs = ref<Position[]>([])
+const bombs = ref<Bomb[]>([])
+const explosions = ref<Explosion[]>([])
 
 const direction = ref<Position>({ x: 1, y: 0 })
 const nextDirection = ref<Position>({ x: 1, y: 0 })
@@ -46,11 +30,13 @@ const score = ref(0)
 const bestScore = ref(0)
 const lives = ref(1)
 const level = ref(1)
-const speed = ref(baseSpeed)
+const speed = ref(140)
 const status = ref<GameStatus>('ready')
 const language = ref<Language>('zhTw')
+const snakeSkin = ref<SnakeSkin>('neon')
+const gameMode = ref<GameMode>('classic')
 
-const lastDifficultyScore = ref(0)
+const lastDifficultyLevel = ref(0)
 const lastRewardScore = ref(0)
 
 const currentSkillKey = ref<RewardKey | null>(null)
@@ -60,10 +46,24 @@ const shieldUntil = ref(0)
 const slowUntil = ref(0)
 const hideObstacleUntil = ref(0)
 const invincibleUntil = ref(0)
+const goldenFoodUntil = ref(0)
+const timeAttackUntil = ref(0)
+const survivalNextPointAt = ref(0)
+
 const now = ref(Date.now())
 
+const avatarImage = ref('')
+const cameraMessage = ref('')
+const cameraActive = ref(false)
+const avatarMenuOpen = ref(false)
+const videoRef = ref<HTMLVideoElement | null>(null)
+const canvasRef = ref<HTMLCanvasElement | null>(null)
+
+let cameraStream: MediaStream | null = null
 let timer: number | undefined
 let clockTimer: number | undefined
+let bombIdSeed = 1
+let explosionIdSeed = 1
 let wasSlowActive = false
 
 const languageOptions = [
@@ -83,910 +83,302 @@ const languageOptions = [
   { value: 'th', label: 'ไทย' },
 ] as const
 
-const text = {
-  zhTw: {
-    project: 'Vue 專案',
-    title: '進階彩色貪食蛇',
-    description: '吃食物、躲炸彈、避開障礙，挑戰更高分數。',
-    language: '切換語言',
-    status: '狀態',
-    ready: '準備中',
-    playing: '遊戲中',
-    paused: '暫停中',
-    over: '遊戲結束',
-    reward: '技能輪盤',
-    boardTitle: '20 × 20 遊戲地圖',
-    score: '目前分數',
-    finalScore: '本次分數',
-    bestScore: '最高分數',
-    lives: '生命',
-    level: '關卡',
-    speed: '蛇速',
-    skill: '目前技能',
-    nextReward: '下一次輪盤',
-    obstacles: '障礙物',
-    bombs: '炸彈',
-    legend: '圖示說明',
-    noSkill: '無',
-    allSkills: '可能出現的技能',
-    start: '開始',
-    pause: '暫停',
-    resume: '繼續',
-    restart: '重新開始',
-    exit: '退出',
-    readyMessage: '按下開始按鈕即可開始遊戲。',
-    pausedMessage: '遊戲已暫停，按繼續或空白鍵恢復。',
-    overMessage: '遊戲結束！可以重新開始挑戰。',
-    gameOverTitle: '遊戲結束',
-    gameOverSubtitle: '這次挑戰結束了，再來一次刷新最高分！',
-    rewardTitle: '技能輪盤獎勵',
-    rewardButton: '領取並繼續',
-    skillEffect: '技能效果',
-    howToUse: '使用方式',
-    controls: '操作方式',
-    space: '空白鍵：暫停 / 繼續',
-    rules: '遊戲規則',
-    ruleFood: '吃到粉紅色食物 = +1 分。',
-    ruleHazard: '撞牆、撞自己、撞紫色障礙或藍色炸彈會扣 1 顆生命，蛇身長度不會減少。',
-    ruleLevel: '每 5 分進到下一關，速度會變快，障礙與炸彈也會增加。',
-    ruleReward: '每 10 分會觸發技能輪盤，技能會自動生效。',
-    activeEffects: '技能倒數',
-    noActiveEffect: '目前沒有技能效果',
-    legendFood: '食物',
-    legendObstacle: '障礙',
-    legendBomb: '炸彈',
-    secondPerStep: '秒 / 格',
-    second: '秒',
-  },
-  en: {
-    project: 'Vue Project',
-    title: 'Advanced Color Snake',
-    description: 'Eat food, dodge bombs, avoid obstacles, and chase a higher score.',
-    language: 'Language',
-    status: 'Status',
-    ready: 'Ready',
-    playing: 'Playing',
-    paused: 'Paused',
-    over: 'Game Over',
-    reward: 'Reward Wheel',
-    boardTitle: '20 × 20 Game Board',
-    score: 'Score',
-    finalScore: 'Final Score',
-    bestScore: 'Best Score',
-    lives: 'Lives',
-    level: 'Level',
-    speed: 'Snake Speed',
-    skill: 'Current Skill',
-    nextReward: 'Next Reward',
-    obstacles: 'Obstacles',
-    bombs: 'Bombs',
-    legend: 'Legend',
-    noSkill: 'None',
-    allSkills: 'Possible Skills',
-    start: 'Start',
-    pause: 'Pause',
-    resume: 'Resume',
-    restart: 'Restart',
-    exit: 'Exit',
-    readyMessage: 'Press Start to begin the game.',
-    pausedMessage: 'Game paused. Press Resume or Space to continue.',
-    overMessage: 'Game Over! Restart and try again.',
-    gameOverTitle: 'Game Over',
-    gameOverSubtitle: 'Challenge ended. Try again and beat your best score!',
-    rewardTitle: 'Reward Wheel',
-    rewardButton: 'Claim and Continue',
-    skillEffect: 'Skill Effect',
-    howToUse: 'How to Use',
-    controls: 'Controls',
-    space: 'Space: Pause / Resume',
-    rules: 'Game Rules',
-    ruleFood: 'Eat pink food = +1 point.',
-    ruleHazard: 'Wall, body, purple obstacle, or blue bomb costs 1 life. Snake length does not shrink.',
-    ruleLevel: 'Every 5 points takes you to the next level. Speed, obstacles, and bombs increase.',
-    ruleReward: 'Every 10 points triggers the reward wheel. Skills activate automatically.',
-    activeEffects: 'Effect Timer',
-    noActiveEffect: 'No active effect',
-    legendFood: 'Food',
-    legendObstacle: 'Obstacle',
-    legendBomb: 'Bomb',
-    secondPerStep: 's / step',
-    second: 's',
-  },
-  ja: {
-    project: 'Vue プロジェクト',
-    title: '上級カラースネーク',
-    description: '食べ物を食べ、爆弾と障害物を避けて高得点を狙おう。',
-    language: '言語',
-    status: '状態',
-    ready: '準備中',
-    playing: 'プレイ中',
-    paused: '一時停止',
-    over: 'ゲーム終了',
-    reward: '報酬ルーレット',
-    boardTitle: '20 × 20 ゲームボード',
-    score: 'スコア',
-    finalScore: '今回のスコア',
-    bestScore: 'ベスト',
-    lives: 'ライフ',
-    level: 'レベル',
-    speed: '速度',
-    skill: '現在のスキル',
-    nextReward: '次の報酬',
-    obstacles: '障害物',
-    bombs: '爆弾',
-    legend: '凡例',
-    noSkill: 'なし',
-    allSkills: '出現するスキル',
-    start: 'スタート',
-    pause: '一時停止',
-    resume: '再開',
-    restart: 'リスタート',
-    exit: '終了',
-    readyMessage: 'スタートを押して開始してください。',
-    pausedMessage: '一時停止中です。再開またはスペースキーを押してください。',
-    overMessage: 'ゲーム終了！もう一度挑戦できます。',
-    gameOverTitle: 'ゲーム終了',
-    gameOverSubtitle: 'もう一度挑戦して最高得点を更新しよう！',
-    rewardTitle: '報酬ルーレット',
-    rewardButton: '受け取って続ける',
-    skillEffect: 'スキル効果',
-    howToUse: '使い方',
-    controls: '操作方法',
-    space: 'スペース：一時停止 / 再開',
-    rules: 'ルール',
-    ruleFood: 'ピンクの食べ物 = +1点。',
-    ruleHazard: '壁・体・紫の障害物・青い爆弾に当たるとライフが1減ります。ヘビの長さは減りません。',
-    ruleLevel: '5点ごとに次のレベルへ進み、速度・障害物・爆弾が増えます。',
-    ruleReward: '10点ごとに報酬ルーレットが発動し、スキルは自動で有効になります。',
-    activeEffects: '効果時間',
-    noActiveEffect: '有効な効果なし',
-    legendFood: '食べ物',
-    legendObstacle: '障害物',
-    legendBomb: '爆弾',
-    secondPerStep: '秒 / マス',
-    second: '秒',
-  },
-  ko: {
-    project: 'Vue 프로젝트',
-    title: '고급 컬러 스네이크',
-    description: '음식을 먹고 폭탄과 장애물을 피해 높은 점수에 도전하세요.',
-    language: '언어',
-    status: '상태',
-    ready: '준비',
-    playing: '게임 중',
-    paused: '일시 정지',
-    over: '게임 오버',
-    reward: '보상 룰렛',
-    boardTitle: '20 × 20 게임 보드',
-    score: '점수',
-    finalScore: '최종 점수',
-    bestScore: '최고 점수',
-    lives: '생명',
-    level: '레벨',
-    speed: '속도',
-    skill: '현재 스킬',
-    nextReward: '다음 보상',
-    obstacles: '장애물',
-    bombs: '폭탄',
-    legend: '범례',
-    noSkill: '없음',
-    allSkills: '가능한 스킬',
-    start: '시작',
-    pause: '일시 정지',
-    resume: '계속',
-    restart: '다시 시작',
-    exit: '나가기',
-    readyMessage: '시작 버튼을 눌러 게임을 시작하세요.',
-    pausedMessage: '게임이 일시 정지되었습니다. 계속 또는 Space를 누르세요.',
-    overMessage: '게임 오버! 다시 도전할 수 있습니다.',
-    gameOverTitle: '게임 오버',
-    gameOverSubtitle: '다시 도전해서 최고 점수를 갱신하세요!',
-    rewardTitle: '보상 룰렛',
-    rewardButton: '받고 계속하기',
-    skillEffect: '스킬 효과',
-    howToUse: '사용 방법',
-    controls: '조작 방법',
-    space: 'Space: 일시 정지 / 계속',
-    rules: '규칙',
-    ruleFood: '분홍색 음식 = +1점.',
-    ruleHazard: '벽, 몸, 보라색 장애물, 파란 폭탄에 닿으면 생명 1개 감소. 뱀 길이는 줄어들지 않습니다.',
-    ruleLevel: '5점마다 다음 레벨로 이동하며 속도, 장애물, 폭탄이 증가합니다.',
-    ruleReward: '10점마다 보상 룰렛이 나오며 스킬은 자동 적용됩니다.',
-    activeEffects: '효과 시간',
-    noActiveEffect: '활성 효과 없음',
-    legendFood: '음식',
-    legendObstacle: '장애물',
-    legendBomb: '폭탄',
-    secondPerStep: '초 / 칸',
-    second: '초',
-  },
-  es: {
-    project: 'Proyecto Vue',
-    title: 'Snake Colorido Avanzado',
-    description: 'Come comida, esquiva bombas y evita obstáculos.',
-    language: 'Idioma',
-    status: 'Estado',
-    ready: 'Listo',
-    playing: 'Jugando',
-    paused: 'Pausado',
-    over: 'Fin',
-    reward: 'Ruleta',
-    boardTitle: 'Tablero 20 × 20',
-    score: 'Puntos',
-    finalScore: 'Puntos finales',
-    bestScore: 'Mejor',
-    lives: 'Vidas',
-    level: 'Nivel',
-    speed: 'Velocidad',
-    skill: 'Habilidad',
-    nextReward: 'Próxima recompensa',
-    obstacles: 'Obstáculos',
-    bombs: 'Bombas',
-    legend: 'Leyenda',
-    noSkill: 'Ninguna',
-    allSkills: 'Habilidades posibles',
-    start: 'Iniciar',
-    pause: 'Pausar',
-    resume: 'Continuar',
-    restart: 'Reiniciar',
-    exit: 'Salir',
-    readyMessage: 'Presiona Iniciar para comenzar.',
-    pausedMessage: 'Juego pausado. Presiona Continuar o Espacio.',
-    overMessage: 'Fin del juego. Puedes reiniciar.',
-    gameOverTitle: 'Fin del juego',
-    gameOverSubtitle: 'Intenta otra vez y supera tu mejor puntuación.',
-    rewardTitle: 'Ruleta de Recompensa',
-    rewardButton: 'Tomar y continuar',
-    skillEffect: 'Efecto',
-    howToUse: 'Uso',
-    controls: 'Controles',
-    space: 'Espacio: Pausar / Continuar',
-    rules: 'Reglas',
-    ruleFood: 'Comida rosa = +1 punto.',
-    ruleHazard: 'Pared, cuerpo, obstáculo morado o bomba azul cuesta 1 vida. La serpiente no se acorta.',
-    ruleLevel: 'Cada 5 puntos pasas al siguiente nivel. Aumentan velocidad, obstáculos y bombas.',
-    ruleReward: 'Cada 10 puntos aparece la ruleta. Las habilidades se activan solas.',
-    activeEffects: 'Tiempo de efecto',
-    noActiveEffect: 'Sin efecto activo',
-    legendFood: 'Comida',
-    legendObstacle: 'Obstáculo',
-    legendBomb: 'Bomba',
-    secondPerStep: 's / paso',
-    second: 's',
-  },
-  fr: {
-    project: 'Projet Vue',
-    title: 'Snake Coloré Avancé',
-    description: 'Mange, évite les bombes et les obstacles.',
-    language: 'Langue',
-    status: 'État',
-    ready: 'Prêt',
-    playing: 'En jeu',
-    paused: 'Pause',
-    over: 'Terminé',
-    reward: 'Roue',
-    boardTitle: 'Plateau 20 × 20',
-    score: 'Score',
-    finalScore: 'Score final',
-    bestScore: 'Meilleur',
-    lives: 'Vies',
-    level: 'Niveau',
-    speed: 'Vitesse',
-    skill: 'Compétence',
-    nextReward: 'Prochaine récompense',
-    obstacles: 'Obstacles',
-    bombs: 'Bombes',
-    legend: 'Légende',
-    noSkill: 'Aucune',
-    allSkills: 'Compétences possibles',
-    start: 'Démarrer',
-    pause: 'Pause',
-    resume: 'Reprendre',
-    restart: 'Recommencer',
-    exit: 'Quitter',
-    readyMessage: 'Appuie sur Démarrer.',
-    pausedMessage: 'Jeu en pause. Appuie sur Reprendre ou Espace.',
-    overMessage: 'Partie terminée. Tu peux recommencer.',
-    gameOverTitle: 'Partie terminée',
-    gameOverSubtitle: 'Rejoue pour battre ton meilleur score.',
-    rewardTitle: 'Roue de Récompense',
-    rewardButton: 'Prendre et continuer',
-    skillEffect: 'Effet',
-    howToUse: 'Utilisation',
-    controls: 'Contrôles',
-    space: 'Espace : Pause / Reprendre',
-    rules: 'Règles',
-    ruleFood: 'Nourriture rose = +1 point.',
-    ruleHazard: 'Mur, corps, obstacle violet ou bombe bleue coûte 1 vie. Le serpent ne raccourcit pas.',
-    ruleLevel: 'Tous les 5 points, tu passes au niveau suivant. Vitesse, obstacles et bombes augmentent.',
-    ruleReward: 'Tous les 10 points, la roue apparaît. Les compétences sont automatiques.',
-    activeEffects: 'Temps effet',
-    noActiveEffect: 'Aucun effet actif',
-    legendFood: 'Nourriture',
-    legendObstacle: 'Obstacle',
-    legendBomb: 'Bombe',
-    secondPerStep: 's / case',
-    second: 's',
-  },
-  de: {
-    project: 'Vue Projekt',
-    title: 'Fortgeschrittenes Snake',
-    description: 'Iss Futter, meide Bomben und Hindernisse.',
-    language: 'Sprache',
-    status: 'Status',
-    ready: 'Bereit',
-    playing: 'Spiel',
-    paused: 'Pause',
-    over: 'Vorbei',
-    reward: 'Rad',
-    boardTitle: '20 × 20 Spielfeld',
-    score: 'Punkte',
-    finalScore: 'Endpunkte',
-    bestScore: 'Bestwert',
-    lives: 'Leben',
-    level: 'Level',
-    speed: 'Tempo',
-    skill: 'Skill',
-    nextReward: 'Nächste Belohnung',
-    obstacles: 'Hindernisse',
-    bombs: 'Bomben',
-    legend: 'Legende',
-    noSkill: 'Kein',
-    allSkills: 'Mögliche Skills',
-    start: 'Start',
-    pause: 'Pause',
-    resume: 'Fortsetzen',
-    restart: 'Neustart',
-    exit: 'Beenden',
-    readyMessage: 'Drücke Start.',
-    pausedMessage: 'Spiel pausiert. Drücke Fortsetzen oder Leertaste.',
-    overMessage: 'Spiel vorbei. Starte neu.',
-    gameOverTitle: 'Spiel vorbei',
-    gameOverSubtitle: 'Versuche es erneut und schlage deinen Bestwert.',
-    rewardTitle: 'Belohnungsrad',
-    rewardButton: 'Nehmen und weiter',
-    skillEffect: 'Effekt',
-    howToUse: 'Benutzung',
-    controls: 'Steuerung',
-    space: 'Leertaste: Pause / Fortsetzen',
-    rules: 'Regeln',
-    ruleFood: 'Pinkes Futter = +1 Punkt.',
-    ruleHazard: 'Wand, Körper, lila Hindernis oder blaue Bombe kostet 1 Leben. Die Schlange wird nicht kürzer.',
-    ruleLevel: 'Alle 5 Punkte kommst du ins nächste Level. Tempo, Hindernisse und Bomben steigen.',
-    ruleReward: 'Alle 10 Punkte erscheint das Rad. Skills wirken automatisch.',
-    activeEffects: 'Effektzeit',
-    noActiveEffect: 'Kein aktiver Effekt',
-    legendFood: 'Futter',
-    legendObstacle: 'Hindernis',
-    legendBomb: 'Bombe',
-    secondPerStep: 's / Feld',
-    second: 's',
-  },
-  pt: {
-    project: 'Projeto Vue',
-    title: 'Snake Colorido Avançado',
-    description: 'Coma comida, desvie de bombas e obstáculos.',
-    language: 'Idioma',
-    status: 'Estado',
-    ready: 'Pronto',
-    playing: 'Jogando',
-    paused: 'Pausado',
-    over: 'Fim',
-    reward: 'Roleta',
-    boardTitle: 'Tabuleiro 20 × 20',
-    score: 'Pontos',
-    finalScore: 'Pontuação final',
-    bestScore: 'Melhor',
-    lives: 'Vidas',
-    level: 'Nível',
-    speed: 'Velocidade',
-    skill: 'Habilidade',
-    nextReward: 'Próxima recompensa',
-    obstacles: 'Obstáculos',
-    bombs: 'Bombas',
-    legend: 'Legenda',
-    noSkill: 'Nenhuma',
-    allSkills: 'Habilidades possíveis',
-    start: 'Iniciar',
-    pause: 'Pausar',
-    resume: 'Continuar',
-    restart: 'Reiniciar',
-    exit: 'Sair',
-    readyMessage: 'Pressione Iniciar.',
-    pausedMessage: 'Jogo pausado. Pressione Continuar ou Espaço.',
-    overMessage: 'Fim de jogo. Tente novamente.',
-    gameOverTitle: 'Fim de jogo',
-    gameOverSubtitle: 'Tente novamente e supere sua melhor pontuação.',
-    rewardTitle: 'Roleta de Recompensa',
-    rewardButton: 'Receber e continuar',
-    skillEffect: 'Efeito',
-    howToUse: 'Como usar',
-    controls: 'Controles',
-    space: 'Espaço: Pausar / Continuar',
-    rules: 'Regras',
-    ruleFood: 'Comida rosa = +1 ponto.',
-    ruleHazard: 'Parede, corpo, obstáculo roxo ou bomba azul custa 1 vida. A cobra não fica menor.',
-    ruleLevel: 'A cada 5 pontos você vai para a próxima fase. Velocidade, obstáculos e bombas aumentam.',
-    ruleReward: 'A cada 10 pontos aparece a roleta. Habilidades são automáticas.',
-    activeEffects: 'Tempo do efeito',
-    noActiveEffect: 'Nenhum efeito ativo',
-    legendFood: 'Comida',
-    legendObstacle: 'Obstáculo',
-    legendBomb: 'Bomba',
-    secondPerStep: 's / passo',
-    second: 's',
-  },
-  ru: {
-    project: 'Проект Vue',
-    title: 'Продвинутая Змейка',
-    description: 'Ешь еду, избегай бомб и препятствий.',
-    language: 'Язык',
-    status: 'Статус',
-    ready: 'Готово',
-    playing: 'Игра',
-    paused: 'Пауза',
-    over: 'Конец',
-    reward: 'Рулетка',
-    boardTitle: 'Поле 20 × 20',
-    score: 'Счёт',
-    finalScore: 'Итоговый счёт',
-    bestScore: 'Лучший',
-    lives: 'Жизни',
-    level: 'Уровень',
-    speed: 'Скорость',
-    skill: 'Навык',
-    nextReward: 'Следующая награда',
-    obstacles: 'Препятствия',
-    bombs: 'Бомбы',
-    legend: 'Легенда',
-    noSkill: 'Нет',
-    allSkills: 'Возможные навыки',
-    start: 'Старт',
-    pause: 'Пауза',
-    resume: 'Продолжить',
-    restart: 'Заново',
-    exit: 'Выход',
-    readyMessage: 'Нажмите Старт.',
-    pausedMessage: 'Пауза. Нажмите Продолжить или Пробел.',
-    overMessage: 'Игра окончена. Начните снова.',
-    gameOverTitle: 'Игра окончена',
-    gameOverSubtitle: 'Попробуй снова и побей лучший счёт.',
-    rewardTitle: 'Рулетка наград',
-    rewardButton: 'Получить и продолжить',
-    skillEffect: 'Эффект',
-    howToUse: 'Как использовать',
-    controls: 'Управление',
-    space: 'Пробел: Пауза / Продолжить',
-    rules: 'Правила',
-    ruleFood: 'Розовая еда = +1 очко.',
-    ruleHazard: 'Стена, тело, фиолетовое препятствие или синяя бомба отнимает 1 жизнь. Змейка не становится короче.',
-    ruleLevel: 'Каждые 5 очков ты переходишь на следующий уровень. Скорость, препятствия и бомбы растут.',
-    ruleReward: 'Каждые 10 очков появляется рулетка. Навыки активируются автоматически.',
-    activeEffects: 'Таймер эффекта',
-    noActiveEffect: 'Нет активного эффекта',
-    legendFood: 'Еда',
-    legendObstacle: 'Препятствие',
-    legendBomb: 'Бомба',
-    secondPerStep: 'с / шаг',
-    second: 'с',
-  },
-  ar: {
-    project: 'مشروع Vue',
-    title: 'لعبة الثعبان المتقدمة',
-    description: 'كل الطعام وتجنب القنابل والعوائق.',
-    language: 'اللغة',
-    status: 'الحالة',
-    ready: 'جاهز',
-    playing: 'قيد اللعب',
-    paused: 'إيقاف',
-    over: 'انتهت',
-    reward: 'العجلة',
-    boardTitle: 'لوحة 20 × 20',
-    score: 'النقاط',
-    finalScore: 'النتيجة النهائية',
-    bestScore: 'الأفضل',
-    lives: 'الحياة',
-    level: 'المستوى',
-    speed: 'السرعة',
-    skill: 'المهارة',
-    nextReward: 'المكافأة التالية',
-    obstacles: 'العوائق',
-    bombs: 'القنابل',
-    legend: 'الرموز',
-    noSkill: 'لا يوجد',
-    allSkills: 'المهارات الممكنة',
-    start: 'ابدأ',
-    pause: 'إيقاف',
-    resume: 'متابعة',
-    restart: 'إعادة',
-    exit: 'خروج',
-    readyMessage: 'اضغط ابدأ.',
-    pausedMessage: 'اللعبة متوقفة. اضغط متابعة أو المسافة.',
-    overMessage: 'انتهت اللعبة. حاول مرة أخرى.',
-    gameOverTitle: 'انتهت اللعبة',
-    gameOverSubtitle: 'حاول مرة أخرى وحقق نتيجة أفضل.',
-    rewardTitle: 'عجلة المكافآت',
-    rewardButton: 'استلام ومتابعة',
-    skillEffect: 'التأثير',
-    howToUse: 'طريقة الاستخدام',
-    controls: 'التحكم',
-    space: 'المسافة: إيقاف / متابعة',
-    rules: 'القواعد',
-    ruleFood: 'الطعام الوردي = +1 نقطة.',
-    ruleHazard: 'الجدار أو الجسم أو العائق البنفسجي أو القنبلة الزرقاء تنقص حياة واحدة ولا يقل طول الثعبان.',
-    ruleLevel: 'كل 5 نقاط تنتقل إلى المرحلة التالية وتزيد السرعة والعوائق والقنابل.',
-    ruleReward: 'كل 10 نقاط تظهر العجلة. المهارات تعمل تلقائياً.',
-    activeEffects: 'وقت التأثير',
-    noActiveEffect: 'لا يوجد تأثير فعال',
-    legendFood: 'طعام',
-    legendObstacle: 'عائق',
-    legendBomb: 'قنبلة',
-    secondPerStep: 'ث / خطوة',
-    second: 'ث',
-  },
-  hi: {
-    project: 'Vue प्रोजेक्ट',
-    title: 'एडवांस स्नेक गेम',
-    description: 'खाना खाएँ, बम और बाधाओं से बचें।',
-    language: 'भाषा',
-    status: 'स्थिति',
-    ready: 'तैयार',
-    playing: 'खेल',
-    paused: 'रुका',
-    over: 'समाप्त',
-    reward: 'इनाम',
-    boardTitle: '20 × 20 बोर्ड',
-    score: 'स्कोर',
-    finalScore: 'अंतिम स्कोर',
-    bestScore: 'सर्वश्रेष्ठ',
-    lives: 'जीवन',
-    level: 'लेवल',
-    speed: 'गति',
-    skill: 'कौशल',
-    nextReward: 'अगला इनाम',
-    obstacles: 'बाधाएँ',
-    bombs: 'बम',
-    legend: 'चिह्न',
-    noSkill: 'कोई नहीं',
-    allSkills: 'संभावित कौशल',
-    start: 'शुरू',
-    pause: 'रोकें',
-    resume: 'जारी',
-    restart: 'फिर शुरू',
-    exit: 'बाहर',
-    readyMessage: 'Start दबाएँ।',
-    pausedMessage: 'खेल रुका है। Resume या Space दबाएँ।',
-    overMessage: 'गेम समाप्त। फिर से कोशिश करें।',
-    gameOverTitle: 'गेम समाप्त',
-    gameOverSubtitle: 'फिर खेलें और अपना सर्वश्रेष्ठ स्कोर तोड़ें।',
-    rewardTitle: 'इनाम चक्र',
-    rewardButton: 'लेकर जारी रखें',
-    skillEffect: 'कौशल प्रभाव',
-    howToUse: 'कैसे उपयोग करें',
-    controls: 'नियंत्रण',
-    space: 'Space: रोकें / जारी',
-    rules: 'नियम',
-    ruleFood: 'गुलाबी खाना = +1 अंक।',
-    ruleHazard: 'दीवार, शरीर, बैंगनी बाधा या नीला बम 1 जीवन घटाता है। साँप की लंबाई कम नहीं होती।',
-    ruleLevel: 'हर 5 अंक पर आप अगले लेवल में जाते हैं। गति, बाधाएँ और बम बढ़ते हैं।',
-    ruleReward: 'हर 10 अंक पर इनाम चक्र आता है। कौशल अपने आप सक्रिय होते हैं।',
-    activeEffects: 'प्रभाव समय',
-    noActiveEffect: 'कोई सक्रिय प्रभाव नहीं',
-    legendFood: 'खाना',
-    legendObstacle: 'बाधा',
-    legendBomb: 'बम',
-    secondPerStep: 'से / कदम',
-    second: 'से',
-  },
-  id: {
-    project: 'Proyek Vue',
-    title: 'Snake Warna Lanjutan',
-    description: 'Makan makanan, hindari bom dan rintangan.',
-    language: 'Bahasa',
-    status: 'Status',
-    ready: 'Siap',
-    playing: 'Bermain',
-    paused: 'Jeda',
-    over: 'Selesai',
-    reward: 'Roda Hadiah',
-    boardTitle: 'Papan 20 × 20',
-    score: 'Skor',
-    finalScore: 'Skor akhir',
-    bestScore: 'Terbaik',
-    lives: 'Nyawa',
-    level: 'Level',
-    speed: 'Kecepatan',
-    skill: 'Skill',
-    nextReward: 'Hadiah berikutnya',
-    obstacles: 'Rintangan',
-    bombs: 'Bom',
-    legend: 'Legenda',
-    noSkill: 'Tidak ada',
-    allSkills: 'Skill yang mungkin',
-    start: 'Mulai',
-    pause: 'Jeda',
-    resume: 'Lanjut',
-    restart: 'Ulangi',
-    exit: 'Keluar',
-    readyMessage: 'Tekan Mulai.',
-    pausedMessage: 'Game dijeda. Tekan Lanjut atau Spasi.',
-    overMessage: 'Game selesai. Coba lagi.',
-    gameOverTitle: 'Game selesai',
-    gameOverSubtitle: 'Coba lagi dan kalahkan skor terbaikmu.',
-    rewardTitle: 'Roda Hadiah',
-    rewardButton: 'Ambil dan lanjut',
-    skillEffect: 'Efek Skill',
-    howToUse: 'Cara Pakai',
-    controls: 'Kontrol',
-    space: 'Spasi: Jeda / Lanjut',
-    rules: 'Aturan',
-    ruleFood: 'Makanan merah muda = +1 poin.',
-    ruleHazard: 'Dinding, tubuh, rintangan ungu, atau bom biru mengurangi 1 nyawa. Panjang ular tidak berkurang.',
-    ruleLevel: 'Setiap 5 poin masuk ke level berikutnya. Kecepatan, rintangan, dan bom bertambah.',
-    ruleReward: 'Setiap 10 poin roda hadiah muncul. Skill aktif otomatis.',
-    activeEffects: 'Waktu Efek',
-    noActiveEffect: 'Tidak ada efek aktif',
-    legendFood: 'Makanan',
-    legendObstacle: 'Rintangan',
-    legendBomb: 'Bom',
-    secondPerStep: 'd / langkah',
-    second: 'd',
-  },
-  vi: {
-    project: 'Dự án Vue',
-    title: 'Snake Nâng Cao',
-    description: 'Ăn thức ăn, né bom và vật cản.',
-    language: 'Ngôn ngữ',
-    status: 'Trạng thái',
-    ready: 'Sẵn sàng',
-    playing: 'Đang chơi',
-    paused: 'Tạm dừng',
-    over: 'Kết thúc',
-    reward: 'Vòng quay',
-    boardTitle: 'Bảng 20 × 20',
-    score: 'Điểm',
-    finalScore: 'Điểm cuối',
-    bestScore: 'Cao nhất',
-    lives: 'Mạng',
-    level: 'Cấp',
-    speed: 'Tốc độ',
-    skill: 'Kỹ năng',
-    nextReward: 'Thưởng tiếp',
-    obstacles: 'Vật cản',
-    bombs: 'Bom',
-    legend: 'Chú thích',
-    noSkill: 'Không có',
-    allSkills: 'Kỹ năng có thể xuất hiện',
-    start: 'Bắt đầu',
-    pause: 'Tạm dừng',
-    resume: 'Tiếp tục',
-    restart: 'Chơi lại',
-    exit: 'Thoát',
-    readyMessage: 'Nhấn Bắt đầu.',
-    pausedMessage: 'Đã tạm dừng. Nhấn Tiếp tục hoặc Space.',
-    overMessage: 'Kết thúc. Hãy thử lại.',
-    gameOverTitle: 'Kết thúc',
-    gameOverSubtitle: 'Chơi lại để vượt điểm cao nhất.',
-    rewardTitle: 'Vòng quay thưởng',
-    rewardButton: 'Nhận và tiếp tục',
-    skillEffect: 'Hiệu ứng',
-    howToUse: 'Cách dùng',
-    controls: 'Điều khiển',
-    space: 'Space: Tạm dừng / Tiếp tục',
-    rules: 'Luật',
-    ruleFood: 'Thức ăn màu hồng = +1 điểm.',
-    ruleHazard: 'Tường, thân, vật cản tím hoặc bom xanh làm mất 1 mạng. Chiều dài rắn không giảm.',
-    ruleLevel: 'Mỗi 5 điểm sang cấp tiếp theo. Tốc độ, vật cản và bom tăng lên.',
-    ruleReward: 'Mỗi 10 điểm có vòng quay. Kỹ năng tự động kích hoạt.',
-    activeEffects: 'Thời gian hiệu ứng',
-    noActiveEffect: 'Không có hiệu ứng',
-    legendFood: 'Thức ăn',
-    legendObstacle: 'Vật cản',
-    legendBomb: 'Bom',
-    secondPerStep: 'giây / ô',
-    second: 'giây',
-  },
-  th: {
-    project: 'โปรเจกต์ Vue',
-    title: 'เกมงูขั้นสูง',
-    description: 'กินอาหาร หลบระเบิดและสิ่งกีดขวาง',
-    language: 'ภาษา',
-    status: 'สถานะ',
-    ready: 'พร้อม',
-    playing: 'เล่น',
-    paused: 'หยุด',
-    over: 'จบ',
-    reward: 'วงล้อ',
-    boardTitle: 'กระดาน 20 × 20',
-    score: 'คะแนน',
-    finalScore: 'คะแนนสุดท้าย',
-    bestScore: 'สูงสุด',
-    lives: 'ชีวิต',
-    level: 'ระดับ',
-    speed: 'ความเร็ว',
-    skill: 'สกิล',
-    nextReward: 'รางวัลถัดไป',
-    obstacles: 'สิ่งกีดขวาง',
-    bombs: 'ระเบิด',
-    legend: 'สัญลักษณ์',
-    noSkill: 'ไม่มี',
-    allSkills: 'สกิลที่อาจได้',
-    start: 'เริ่ม',
-    pause: 'หยุด',
-    resume: 'เล่นต่อ',
-    restart: 'เริ่มใหม่',
-    exit: 'ออก',
-    readyMessage: 'กดเริ่ม',
-    pausedMessage: 'หยุดชั่วคราว กดเล่นต่อหรือ Space',
-    overMessage: 'จบเกม ลองใหม่ได้',
-    gameOverTitle: 'จบเกม',
-    gameOverSubtitle: 'ลองใหม่เพื่อทำคะแนนสูงสุด',
-    rewardTitle: 'วงล้อรางวัล',
-    rewardButton: 'รับและเล่นต่อ',
-    skillEffect: 'ผลของสกิล',
-    howToUse: 'วิธีใช้',
-    controls: 'ควบคุม',
-    space: 'Space: หยุด / เล่นต่อ',
-    rules: 'กติกา',
-    ruleFood: 'อาหารสีชมพู = +1 คะแนน',
-    ruleHazard: 'ชนกำแพง ตัวเอง สิ่งกีดขวางสีม่วง หรือระเบิดสีน้ำเงินเสีย 1 ชีวิต ความยาวงูไม่ลดลง',
-    ruleLevel: 'ทุก 5 คะแนนจะเข้าสู่ด่านถัดไป ความเร็ว สิ่งกีดขวาง และระเบิดจะเพิ่มขึ้น',
-    ruleReward: 'ทุก 10 คะแนนจะมีวงล้อรางวัล สกิลทำงานอัตโนมัติ',
-    activeEffects: 'เวลาสกิล',
-    noActiveEffect: 'ไม่มีสกิลทำงาน',
-    legendFood: 'อาหาร',
-    legendObstacle: 'สิ่งกีดขวาง',
-    legendBomb: 'ระเบิด',
-    secondPerStep: 'วิ / ช่อง',
-    second: 'วิ',
-  },
+const snakeSkinOptions = [
+  { value: 'neon', icon: '🟩' },
+  { value: 'snake', icon: '🐍' },
+  { value: 'dragon', icon: '🐉' },
+  { value: 'robot', icon: '🤖' },
+  { value: 'cat', icon: '😺' },
+  { value: 'avatar', icon: '📸' },
+] as const
+
+const modeOptions = [
+  { value: 'classic', icon: '🎮' },
+  { value: 'portal', icon: '🌀' },
+  { value: 'time', icon: '⏱️' },
+  { value: 'treasure', icon: '💎' },
+  { value: 'survival', icon: '🔥' },
+] as const
+
+const zhText = {
+  project: 'Vue 專案',
+  title: '貪食蛇遊戲',
+  description: '選擇蛇的樣式與玩法模式，吃食物、躲炸彈、避開障礙，挑戰最高分。',
+  language: '切換語言',
+  snakeStyle: '蛇的樣式',
+  mode: '遊戲模式',
+
+  classic: '經典模式',
+  portal: '穿越模式',
+  time: '限時模式',
+  treasure: '寶藏模式',
+  survival: '生存模式',
+
+  classicDesc: '標準玩法，撞牆或撞到危險物會扣生命。',
+  portalDesc: '撞到牆不會死，會從地圖另一邊穿出來。',
+  timeDesc: '60 秒限時挑戰，吃食物會增加時間。',
+  treasureDesc: '會出現金色食物，吃到可以獲得額外分數。',
+  survivalDesc: '分數會隨時間增加，但障礙與炸彈會越來越多。',
+
+  neon: '霓虹方塊',
+  snake: '小蛇',
+  dragon: '龍',
+  robot: '機器人',
+  cat: '貓咪',
+  avatar: '我的頭貼',
+
+  status: '狀態',
+  ready: '準備中',
+  playing: '遊戲中',
+  paused: '暫停中',
+  over: '遊戲結束',
+  reward: '技能輪盤',
+
+  boardTitle: '20 × 20 遊戲地圖',
+  score: '目前分數',
+  finalScore: '本次分數',
+  bestScore: '最高分數',
+  lives: '生命',
+  level: '關卡',
+  speed: '蛇速',
+  skill: '目前技能',
+  nextReward: '下一次輪盤',
+  obstacles: '障礙物',
+  bombs: '炸彈',
+  timeLeft: '剩餘時間',
+  nextSurvivalPoint: '生存加分',
+  modeFeature: '模式特色',
+
+  avatarMenu: '自訂頭貼',
+  cameraTitle: '拍照設定蛇頭',
+  openCamera: '開啟鏡頭',
+  capturePhoto: '拍照使用',
+  closeCamera: '關閉鏡頭',
+  clearAvatar: '清除頭貼',
+  closeMenu: '關閉選單',
+  cameraHint: '拍照後會自動切換成「我的頭貼」樣式，照片會以圓形顯示在蛇頭。',
+  cameraReady: '鏡頭已開啟，可以拍照。',
+  cameraDenied: '鏡頭無法開啟，可能是瀏覽器權限被拒絕，仍可使用其他蛇樣式。',
+  cameraCaptured: '已套用圓形頭貼蛇頭。',
+
+  legend: '圖示說明',
+  noSkill: '無',
+  allSkills: '可能出現的技能',
+
+  start: '開始',
+  pause: '暫停',
+  resume: '繼續',
+  restart: '重新開始',
+  exit: '退出',
+
+  readyMessage: '選好模式和蛇的樣式後，按開始即可遊玩。',
+  pausedMessage: '遊戲已暫停，按繼續或空白鍵恢復。',
+  overMessage: '遊戲結束！可以重新開始挑戰。',
+  gameOverTitle: '遊戲結束',
+  gameOverSubtitle: '這次挑戰結束了，再來一次刷新最高分！',
+
+  rewardTitle: '技能輪盤獎勵',
+  rewardButton: '領取並繼續',
+  skillEffect: '技能效果',
+  howToUse: '使用方式',
+
+  controls: '操作方式',
+  space: '空白鍵：暫停 / 繼續',
+
+  rules: '遊戲規則',
+  ruleFood: '吃到 🍎 食物 = +1 分；寶藏模式的 💎 金色食物 = +3 分。',
+  ruleHazard: '撞牆、撞自己、撞 🧱 障礙、踩到 💣 炸彈或被 💥 爆炸波及會扣 1 顆生命。',
+  ruleBomb: '💣 炸彈會不定時引爆，爆炸範圍是周圍 3×3 區域。',
+  ruleLevel: '每 5 分進到下一關，速度會變快，障礙與炸彈也會增加。',
+  ruleReward: '每 10 分會觸發技能輪盤，技能會自動生效。',
+  ruleMode: '不同模式不是單純改難度，而是會改變遊戲玩法。',
+
+  activeEffects: '技能倒數',
+  noActiveEffect: '目前沒有技能效果',
+
+  legendFood: '食物',
+  legendGoldFood: '金色食物',
+  legendObstacle: '障礙',
+  legendBomb: '炸彈',
+  legendExplosion: '爆炸範圍',
+
+  secondPerStep: '秒 / 格',
+  second: '秒',
 }
 
-const rewardTexts = {
+const enText = {
+  ...zhText,
+  project: 'Vue Project',
+  title: 'Snake Game',
+  description: 'Choose a snake style and game mode, eat food, dodge bombs, avoid obstacles, and chase the best score.',
+  language: 'Language',
+  snakeStyle: 'Snake Style',
+  mode: 'Game Mode',
+
+  classic: 'Classic',
+  portal: 'Portal',
+  time: 'Time Attack',
+  treasure: 'Treasure',
+  survival: 'Survival',
+
+  classicDesc: 'Standard snake gameplay. Walls and hazards cost lives.',
+  portalDesc: 'Walls become portals. Going out from one side brings you back from the other side.',
+  timeDesc: 'A 60-second challenge. Eating food adds time.',
+  treasureDesc: 'Golden food appears and gives bonus points.',
+  survivalDesc: 'Score increases over time, but hazards keep growing.',
+
+  neon: 'Neon Block',
+  snake: 'Snake',
+  dragon: 'Dragon',
+  robot: 'Robot',
+  cat: 'Cat',
+  avatar: 'My Avatar',
+
+  status: 'Status',
+  ready: 'Ready',
+  playing: 'Playing',
+  paused: 'Paused',
+  over: 'Game Over',
+  reward: 'Reward Wheel',
+
+  boardTitle: '20 × 20 Game Board',
+  score: 'Score',
+  finalScore: 'Final Score',
+  bestScore: 'Best Score',
+  lives: 'Lives',
+  level: 'Level',
+  speed: 'Speed',
+  skill: 'Current Skill',
+  nextReward: 'Next Reward',
+  obstacles: 'Obstacles',
+  bombs: 'Bombs',
+  timeLeft: 'Time Left',
+  nextSurvivalPoint: 'Survival Point',
+  modeFeature: 'Mode Feature',
+
+  avatarMenu: 'Custom Avatar',
+  cameraTitle: 'Take Photo for Snake Head',
+  openCamera: 'Open Camera',
+  capturePhoto: 'Capture',
+  closeCamera: 'Close Camera',
+  clearAvatar: 'Clear Avatar',
+  closeMenu: 'Close Menu',
+  cameraHint: 'After taking a photo, it will automatically switch to “My Avatar”. The photo is shown as a circular snake head.',
+  cameraReady: 'Camera is ready.',
+  cameraDenied: 'Camera could not be opened. Permission may be denied. Other snake styles still work.',
+  cameraCaptured: 'Circular avatar snake head applied.',
+
+  legend: 'Legend',
+  noSkill: 'None',
+  allSkills: 'Possible Skills',
+
+  start: 'Start',
+  pause: 'Pause',
+  resume: 'Resume',
+  restart: 'Restart',
+  exit: 'Exit',
+
+  readyMessage: 'Choose a mode and snake style, then press Start.',
+  pausedMessage: 'Game paused. Press Resume or Space to continue.',
+  overMessage: 'Game Over! Restart and try again.',
+  gameOverTitle: 'Game Over',
+  gameOverSubtitle: 'Challenge ended. Try again and beat your best score!',
+
+  rewardTitle: 'Reward Wheel',
+  rewardButton: 'Claim and Continue',
+  skillEffect: 'Skill Effect',
+  howToUse: 'How to Use',
+
+  controls: 'Controls',
+  space: 'Space: Pause / Resume',
+
+  rules: 'Game Rules',
+  ruleFood: 'Eat 🍎 food = +1 point. In Treasure mode, 💎 golden food = +3 points.',
+  ruleHazard: 'Wall, body, 🧱 obstacle, 💣 bomb, or 💥 explosion costs 1 life.',
+  ruleBomb: '💣 bombs explode randomly. The blast covers a 3×3 area around the bomb.',
+  ruleLevel: 'Every 5 points takes you to the next level. Speed, obstacles, and bombs increase.',
+  ruleReward: 'Every 10 points triggers the reward wheel. Skills activate automatically.',
+  ruleMode: 'Different modes change the gameplay, not only the difficulty.',
+
+  activeEffects: 'Effect Timer',
+  noActiveEffect: 'No active effect',
+
+  legendFood: 'Food',
+  legendGoldFood: 'Golden Food',
+  legendObstacle: 'Obstacle',
+  legendBomb: 'Bomb',
+  legendExplosion: 'Explosion',
+
+  secondPerStep: 's / step',
+  second: 's',
+}
+
+const text: Record<Language, typeof zhText> = {
+  zhTw: zhText,
+  en: enText,
+  ja: enText,
+  ko: enText,
+  es: enText,
+  fr: enText,
+  de: enText,
+  pt: enText,
+  ru: enText,
+  ar: enText,
+  hi: enText,
+  id: enText,
+  vi: enText,
+  th: enText,
+}
+
+const rewardTexts: Record<Language, Record<RewardKey, [string, string, string]>> = {
   zhTw: {
     life1: ['生命 +1', '生命 +1，之後撞到危險物時可以多撐一次。', '自動生效，地圖上方會增加一顆紅色愛心。'],
     life2: ['生命 +2', '生命 +2，後面關卡容錯率更高。', '自動生效，地圖上方會增加兩顆紅色愛心。'],
     shorten: ['蛇身 -3', '蛇的身體縮短 3 格，轉彎和閃避更容易。', '自動生效，身體會立刻變短。'],
-    removeObstacle: ['移除 3 個障礙', '移除場上 3 個紫色障礙物。', '自動生效，部分障礙會立刻消失。'],
-    clearBomb: ['清除所有炸彈', '清除場上所有藍色炸彈。', '自動生效，所有炸彈會消失。'],
+    removeObstacle: ['移除 3 個障礙', '移除場上 3 個 🧱 障礙物。', '自動生效，部分障礙會立刻消失。'],
+    clearBomb: ['清除所有炸彈', '清除場上所有 💣 炸彈。', '自動生效，所有炸彈會消失。'],
     slow: ['緩速 10 秒', '接下來 10 秒蛇的速度變慢。', '自動生效，趁這段時間吃食物或找安全路線。'],
-    shield: ['護盾 10 秒', '10 秒內碰到障礙或炸彈不會死亡，會把它清掉。', '自動生效，蛇頭變成金色時可以撞掉危險物。'],
-    hideObstacle: ['障礙失效 10 秒', '10 秒內紫色障礙暫時失效，可以安全通過。', '自動生效，趁障礙失效時快速移動。'],
+    shield: ['護盾 10 秒', '10 秒內碰到障礙、炸彈或爆炸不會死亡。', '自動生效，蛇頭變成金色時可以安全通過危險物。'],
+    hideObstacle: ['障礙失效 10 秒', '10 秒內 🧱 障礙暫時失效，可以安全通過。', '自動生效，趁障礙失效時快速移動。'],
   },
   en: {
     life1: ['Life +1', 'Gain 1 extra life for future mistakes.', 'Works automatically. One red heart is added.'],
     life2: ['Life +2', 'Gain 2 extra lives for harder levels.', 'Works automatically. Two red hearts are added.'],
     shorten: ['Snake -3', 'Shortens the snake by 3 blocks.', 'Works automatically and makes turning easier.'],
-    removeObstacle: ['Remove 3 Obstacles', 'Removes 3 purple obstacles.', 'Works automatically. Some obstacles disappear.'],
-    clearBomb: ['Clear All Bombs', 'Removes all blue bombs.', 'Works automatically. All bombs disappear.'],
+    removeObstacle: ['Remove 3 Obstacles', 'Removes 3 🧱 obstacles.', 'Works automatically. Some obstacles disappear.'],
+    clearBomb: ['Clear All Bombs', 'Removes all 💣 bombs.', 'Works automatically. All bombs disappear.'],
     slow: ['Slow 10s', 'The snake slows down for 10 seconds.', 'Use this time to eat food or find a safe route.'],
-    shield: ['Shield 10s', 'For 10 seconds, obstacles and bombs are destroyed instead of hurting you.', 'Works automatically. Golden head means shield is active.'],
-    hideObstacle: ['Disable Obstacles 10s', 'Purple obstacles are disabled for 10 seconds.', 'Move through obstacles safely while active.'],
+    shield: ['Shield 10s', 'For 10 seconds, obstacles, bombs, and explosions do not hurt you.', 'Works automatically. Golden head means shield is active.'],
+    hideObstacle: ['Disable Obstacles 10s', '🧱 obstacles are disabled for 10 seconds.', 'Move through obstacles safely while active.'],
   },
-  ja: {
-    life1: ['ライフ +1', 'ミスしても1回多く耐えられます。', '自動で発動し、赤いハートが1つ増えます。'],
-    life2: ['ライフ +2', '難しいレベルに備えてライフが2つ増えます。', '自動で発動し、赤いハートが2つ増えます。'],
-    shorten: ['体 -3', 'ヘビの体が3マス短くなります。', '自動で発動し、曲がりやすくなります。'],
-    removeObstacle: ['障害物を3つ除去', '紫の障害物を3つ消します。', '自動で発動します。'],
-    clearBomb: ['爆弾を全消去', '青い爆弾をすべて消します。', '自動で発動します。'],
-    slow: ['低速 10秒', '10秒間ヘビが遅くなります。', '安全ルートを探す時間に使えます。'],
-    shield: ['シールド 10秒', '10秒間、障害物や爆弾を壊せます。', '金色の頭の間は有効です。'],
-    hideObstacle: ['障害物無効 10秒', '10秒間、紫の障害物が無効になります。', 'その間に安全に通過できます。'],
-  },
-  ko: {
-    life1: ['생명 +1', '실수해도 한 번 더 버틸 수 있습니다.', '자동 적용되며 빨간 하트가 1개 증가합니다.'],
-    life2: ['생명 +2', '어려운 레벨을 위해 생명이 2개 증가합니다.', '자동 적용되며 빨간 하트가 2개 증가합니다.'],
-    shorten: ['몸길이 -3', '뱀의 몸이 3칸 짧아집니다.', '자동 적용되어 회피가 쉬워집니다.'],
-    removeObstacle: ['장애물 3개 제거', '보라색 장애물 3개를 제거합니다.', '자동 적용됩니다.'],
-    clearBomb: ['폭탄 모두 제거', '파란 폭탄을 모두 제거합니다.', '자동 적용됩니다.'],
-    slow: ['감속 10초', '10초 동안 뱀이 느려집니다.', '그동안 음식을 먹거나 안전한 길을 찾으세요.'],
-    shield: ['보호막 10초', '10초 동안 장애물과 폭탄을 부술 수 있습니다.', '머리가 금색이면 보호막이 활성화된 상태입니다.'],
-    hideObstacle: ['장애물 무효 10초', '10초 동안 보라색 장애물이 무효가 됩니다.', '그동안 안전하게 지나갈 수 있습니다.'],
-  },
-  es: {
-    life1: ['Vida +1', 'Ganas 1 vida extra.', 'Se activa automáticamente y agrega un corazón rojo.'],
-    life2: ['Vida +2', 'Ganas 2 vidas extra.', 'Se activa automáticamente y agrega dos corazones.'],
-    shorten: ['Serpiente -3', 'La serpiente se acorta 3 bloques.', 'Se activa automáticamente.'],
-    removeObstacle: ['Quitar 3 obstáculos', 'Elimina 3 obstáculos morados.', 'Se activa automáticamente.'],
-    clearBomb: ['Eliminar bombas', 'Elimina todas las bombas azules.', 'Se activa automáticamente.'],
-    slow: ['Lento 10s', 'La serpiente va más lenta por 10 segundos.', 'Usa el tiempo para buscar una ruta segura.'],
-    shield: ['Escudo 10s', 'Por 10 segundos destruyes obstáculos y bombas.', 'Funciona automáticamente cuando la cabeza es dorada.'],
-    hideObstacle: ['Obstáculos off 10s', 'Los obstáculos morados se desactivan por 10 segundos.', 'Puedes pasar por ellos mientras dura.'],
-  },
-  fr: {
-    life1: ['Vie +1', 'Tu gagnes 1 vie supplémentaire.', 'Automatique, un cœur rouge est ajouté.'],
-    life2: ['Vie +2', 'Tu gagnes 2 vies supplémentaires.', 'Automatique, deux cœurs sont ajoutés.'],
-    shorten: ['Serpent -3', 'Le serpent raccourcit de 3 cases.', 'Automatique.'],
-    removeObstacle: ['Retirer 3 obstacles', 'Supprime 3 obstacles violets.', 'Automatique.'],
-    clearBomb: ['Supprimer les bombes', 'Supprime toutes les bombes bleues.', 'Automatique.'],
-    slow: ['Ralentir 10s', 'Le serpent ralentit pendant 10 secondes.', 'Profite-en pour trouver une route sûre.'],
-    shield: ['Bouclier 10s', 'Pendant 10 secondes, tu détruis obstacles et bombes.', 'Actif quand la tête est dorée.'],
-    hideObstacle: ['Obstacles off 10s', 'Les obstacles violets sont désactivés 10 secondes.', 'Tu peux les traverser.'],
-  },
-  de: {
-    life1: ['Leben +1', 'Du erhältst 1 zusätzliches Leben.', 'Automatisch, ein rotes Herz wird hinzugefügt.'],
-    life2: ['Leben +2', 'Du erhältst 2 zusätzliche Leben.', 'Automatisch, zwei Herzen werden hinzugefügt.'],
-    shorten: ['Schlange -3', 'Die Schlange wird 3 Felder kürzer.', 'Automatisch.'],
-    removeObstacle: ['3 Hindernisse entfernen', 'Entfernt 3 lila Hindernisse.', 'Automatisch.'],
-    clearBomb: ['Alle Bomben löschen', 'Entfernt alle blauen Bomben.', 'Automatisch.'],
-    slow: ['Langsam 10s', 'Die Schlange wird 10 Sekunden langsamer.', 'Nutze die Zeit für sichere Wege.'],
-    shield: ['Schild 10s', '10 Sekunden zerstörst du Hindernisse und Bomben.', 'Aktiv, wenn der Kopf golden ist.'],
-    hideObstacle: ['Hindernisse aus 10s', 'Lila Hindernisse sind 10 Sekunden deaktiviert.', 'Du kannst hindurchgehen.'],
-  },
-  pt: {
-    life1: ['Vida +1', 'Você ganha 1 vida extra.', 'Ativa automaticamente e adiciona um coração.'],
-    life2: ['Vida +2', 'Você ganha 2 vidas extras.', 'Ativa automaticamente e adiciona dois corações.'],
-    shorten: ['Cobra -3', 'A cobra fica 3 blocos menor.', 'Ativa automaticamente.'],
-    removeObstacle: ['Remover 3 obstáculos', 'Remove 3 obstáculos roxos.', 'Ativa automaticamente.'],
-    clearBomb: ['Limpar bombas', 'Remove todas as bombas azuis.', 'Ativa automaticamente.'],
-    slow: ['Lento 10s', 'A cobra fica mais lenta por 10 segundos.', 'Use esse tempo para achar uma rota segura.'],
-    shield: ['Escudo 10s', 'Por 10 segundos você destrói obstáculos e bombas.', 'Ativo quando a cabeça fica dourada.'],
-    hideObstacle: ['Obstáculos off 10s', 'Obstáculos roxos ficam desativados por 10 segundos.', 'Você pode passar por eles.'],
-  },
-  ru: {
-    life1: ['Жизнь +1', 'Добавляет 1 жизнь.', 'Срабатывает автоматически, появляется сердце.'],
-    life2: ['Жизнь +2', 'Добавляет 2 жизни.', 'Срабатывает автоматически, появляются два сердца.'],
-    shorten: ['Змейка -3', 'Змейка становится короче на 3 клетки.', 'Срабатывает автоматически.'],
-    removeObstacle: ['Убрать 3 препятствия', 'Удаляет 3 фиолетовых препятствия.', 'Срабатывает автоматически.'],
-    clearBomb: ['Убрать бомбы', 'Удаляет все синие бомбы.', 'Срабатывает автоматически.'],
-    slow: ['Замедление 10с', 'Змейка замедляется на 10 секунд.', 'Используй время для безопасного пути.'],
-    shield: ['Щит 10с', '10 секунд препятствия и бомбы уничтожаются.', 'Активен, когда голова золотая.'],
-    hideObstacle: ['Препятствия выкл. 10с', 'Фиолетовые препятствия отключены на 10 секунд.', 'Можно проходить сквозь них.'],
-  },
-  ar: {
-    life1: ['حياة +1', 'تحصل على حياة إضافية.', 'تعمل تلقائياً ويضاف قلب أحمر.'],
-    life2: ['حياة +2', 'تحصل على حياتين إضافيتين.', 'تعمل تلقائياً ويضاف قلبان.'],
-    shorten: ['تقليل الجسم -3', 'يصبح الثعبان أقصر بثلاث خانات.', 'تعمل تلقائياً.'],
-    removeObstacle: ['إزالة 3 عوائق', 'تزيل 3 عوائق بنفسجية.', 'تعمل تلقائياً.'],
-    clearBomb: ['إزالة القنابل', 'تزيل كل القنابل الزرقاء.', 'تعمل تلقائياً.'],
-    slow: ['إبطاء 10 ثوانٍ', 'يصبح الثعبان أبطأ لمدة 10 ثوانٍ.', 'استغل الوقت لإيجاد طريق آمن.'],
-    shield: ['درع 10 ثوانٍ', 'لمدة 10 ثوانٍ يتم تدمير العوائق والقنابل.', 'يعمل عندما يصبح الرأس ذهبياً.'],
-    hideObstacle: ['تعطيل العوائق 10 ثوانٍ', 'العوائق البنفسجية تتعطل لمدة 10 ثوانٍ.', 'يمكن المرور خلالها.'],
-  },
-  hi: {
-    life1: ['जीवन +1', 'आपको 1 अतिरिक्त जीवन मिलता है।', 'अपने आप लागू होता है और एक लाल दिल जुड़ता है।'],
-    life2: ['जीवन +2', 'आपको 2 अतिरिक्त जीवन मिलते हैं।', 'अपने आप लागू होता है और दो दिल जुड़ते हैं।'],
-    shorten: ['साँप -3', 'साँप 3 ब्लॉक छोटा हो जाता है।', 'अपने आप लागू होता है।'],
-    removeObstacle: ['3 बाधाएँ हटाएँ', '3 बैंगनी बाधाएँ हटती हैं।', 'अपने आप लागू होता है।'],
-    clearBomb: ['सभी बम हटाएँ', 'सभी नीले बम हटते हैं।', 'अपने आप लागू होता है।'],
-    slow: ['धीमा 10 सेकंड', 'साँप 10 सेकंड धीमा होता है।', 'सुरक्षित रास्ता खोजने के लिए समय का उपयोग करें।'],
-    shield: ['शील्ड 10 सेकंड', '10 सेकंड तक बाधाएँ और बम टूट जाते हैं।', 'सिर सुनहरा हो तो शील्ड सक्रिय है।'],
-    hideObstacle: ['बाधा बंद 10 सेकंड', 'बैंगनी बाधाएँ 10 सेकंड निष्क्रिय होती हैं।', 'आप उनके बीच से गुजर सकते हैं।'],
-  },
-  id: {
-    life1: ['Nyawa +1', 'Mendapat 1 nyawa tambahan.', 'Aktif otomatis dan menambah satu hati merah.'],
-    life2: ['Nyawa +2', 'Mendapat 2 nyawa tambahan.', 'Aktif otomatis dan menambah dua hati merah.'],
-    shorten: ['Ular -3', 'Tubuh ular berkurang 3 blok.', 'Aktif otomatis.'],
-    removeObstacle: ['Hapus 3 rintangan', 'Menghapus 3 rintangan ungu.', 'Aktif otomatis.'],
-    clearBomb: ['Hapus semua bom', 'Menghapus semua bom biru.', 'Aktif otomatis.'],
-    slow: ['Lambat 10d', 'Ular melambat selama 10 detik.', 'Gunakan waktu ini untuk mencari jalur aman.'],
-    shield: ['Perisai 10d', 'Selama 10 detik, rintangan dan bom dihancurkan.', 'Aktif saat kepala berwarna emas.'],
-    hideObstacle: ['Rintangan mati 10d', 'Rintangan ungu tidak aktif selama 10 detik.', 'Kamu bisa melewatinya.'],
-  },
-  vi: {
-    life1: ['Mạng +1', 'Bạn nhận thêm 1 mạng.', 'Tự động kích hoạt và thêm một tim đỏ.'],
-    life2: ['Mạng +2', 'Bạn nhận thêm 2 mạng.', 'Tự động kích hoạt và thêm hai tim đỏ.'],
-    shorten: ['Rắn -3', 'Thân rắn ngắn đi 3 ô.', 'Tự động kích hoạt.'],
-    removeObstacle: ['Xóa 3 vật cản', 'Xóa 3 vật cản màu tím.', 'Tự động kích hoạt.'],
-    clearBomb: ['Xóa tất cả bom', 'Xóa tất cả bom màu xanh.', 'Tự động kích hoạt.'],
-    slow: ['Chậm 10 giây', 'Rắn chậm lại trong 10 giây.', 'Dùng thời gian này để tìm đường an toàn.'],
-    shield: ['Khiên 10 giây', 'Trong 10 giây, vật cản và bom sẽ bị phá hủy.', 'Đầu màu vàng nghĩa là khiên đang bật.'],
-    hideObstacle: ['Tắt vật cản 10 giây', 'Vật cản tím mất tác dụng trong 10 giây.', 'Bạn có thể đi xuyên qua chúng.'],
-  },
-  th: {
-    life1: ['ชีวิต +1', 'ได้ชีวิตเพิ่ม 1 ดวง', 'ทำงานอัตโนมัติและเพิ่มหัวใจสีแดง 1 ดวง'],
-    life2: ['ชีวิต +2', 'ได้ชีวิตเพิ่ม 2 ดวง', 'ทำงานอัตโนมัติและเพิ่มหัวใจสีแดง 2 ดวง'],
-    shorten: ['งูสั้นลง -3', 'ตัวงูสั้นลง 3 ช่อง', 'ทำงานอัตโนมัติ'],
-    removeObstacle: ['ลบสิ่งกีดขวาง 3 อัน', 'ลบสิ่งกีดขวางสีม่วง 3 อัน', 'ทำงานอัตโนมัติ'],
-    clearBomb: ['ลบระเบิดทั้งหมด', 'ลบระเบิดสีน้ำเงินทั้งหมด', 'ทำงานอัตโนมัติ'],
-    slow: ['ช้าลง 10 วิ', 'งูช้าลง 10 วินาที', 'ใช้เวลานี้หาเส้นทางปลอดภัย'],
-    shield: ['โล่ 10 วิ', '10 วินาที ชนสิ่งกีดขวางหรือระเบิดแล้วไม่ตาย', 'หัวสีทองแปลว่าโล่ทำงาน'],
-    hideObstacle: ['ปิดสิ่งกีดขวาง 10 วิ', 'สิ่งกีดขวางสีม่วงใช้ไม่ได้ 10 วินาที', 'สามารถผ่านได้อย่างปลอดภัย'],
-  },
-} satisfies Record<Language, Record<RewardKey, [string, string, string]>>
+  ja: {} as Record<RewardKey, [string, string, string]>,
+  ko: {} as Record<RewardKey, [string, string, string]>,
+  es: {} as Record<RewardKey, [string, string, string]>,
+  fr: {} as Record<RewardKey, [string, string, string]>,
+  de: {} as Record<RewardKey, [string, string, string]>,
+  pt: {} as Record<RewardKey, [string, string, string]>,
+  ru: {} as Record<RewardKey, [string, string, string]>,
+  ar: {} as Record<RewardKey, [string, string, string]>,
+  hi: {} as Record<RewardKey, [string, string, string]>,
+  id: {} as Record<RewardKey, [string, string, string]>,
+  vi: {} as Record<RewardKey, [string, string, string]>,
+  th: {} as Record<RewardKey, [string, string, string]>,
+}
+
+for (const lang of ['ja', 'ko', 'es', 'fr', 'de', 'pt', 'ru', 'ar', 'hi', 'id', 'vi', 'th'] as Language[]) {
+  rewardTexts[lang] = rewardTexts.en
+}
 
 const t = computed(() => text[language.value])
 const r = computed(() => rewardTexts[language.value])
+
+function getText(key: keyof typeof zhText) {
+  return t.value[key]
+}
+
+function getModeDesc(mode: GameMode) {
+  return t.value[`${mode}Desc` as keyof typeof zhText]
+}
 
 const rewardKeys: RewardKey[] = [
   'life1',
@@ -1027,7 +419,15 @@ const statusText = computed(() => {
   return t.value.over
 })
 
+const modeDescription = computed(() => getModeDesc(gameMode.value))
 const nextRewardPoint = computed(() => Math.floor(score.value / 10) * 10 + 10)
+
+const baseSpeed = computed(() => {
+  if (gameMode.value === 'time') return 120
+  if (gameMode.value === 'survival') return 125
+  if (gameMode.value === 'portal') return 135
+  return 140
+})
 
 const snakeSpeedSeconds = computed(() => {
   const realSpeed = activeSlow.value ? speed.value + 90 : speed.value
@@ -1036,9 +436,7 @@ const snakeSpeedSeconds = computed(() => {
 
 function getLeftSecond(endTime: number) {
   const leftMs = endTime - now.value
-
   if (leftMs <= 0) return 0
-
   return Math.ceil(leftMs / 1000)
 }
 
@@ -1046,11 +444,15 @@ const shieldLeft = computed(() => getLeftSecond(shieldUntil.value))
 const slowLeft = computed(() => getLeftSecond(slowUntil.value))
 const hideObstacleLeft = computed(() => getLeftSecond(hideObstacleUntil.value))
 const invincibleLeft = computed(() => getLeftSecond(invincibleUntil.value))
+const goldenFoodLeft = computed(() => getLeftSecond(goldenFoodUntil.value))
+const timeLeft = computed(() => getLeftSecond(timeAttackUntil.value))
+const survivalPointLeft = computed(() => getLeftSecond(survivalNextPointAt.value))
 
 const activeShield = computed(() => shieldLeft.value > 0)
 const activeSlow = computed(() => slowLeft.value > 0)
 const obstaclesHidden = computed(() => hideObstacleLeft.value > 0)
 const isInvincible = computed(() => invincibleLeft.value > 0)
+const activeGoldenFood = computed(() => goldenFood.value !== null && goldenFoodLeft.value > 0)
 
 const cells = computed(() => {
   const result: Position[] = []
@@ -1084,12 +486,20 @@ function isFood(cell: Position) {
   return same(food.value, cell)
 }
 
+function isGoldenFood(cell: Position) {
+  return activeGoldenFood.value && goldenFood.value !== null && same(goldenFood.value, cell)
+}
+
 function isObstacle(cell: Position) {
   return !obstaclesHidden.value && obstacles.value.some((item) => same(item, cell))
 }
 
 function isBomb(cell: Position) {
   return bombs.value.some((item) => same(item, cell))
+}
+
+function isExplosion(cell: Position) {
+  return explosions.value.some((item) => same(item, cell) && item.endAt > now.value)
 }
 
 function getCellClass(cell: Position) {
@@ -1100,10 +510,36 @@ function getCellClass(cell: Position) {
   }
 
   if (isSnakeBody(cell)) return 'cell snake-body'
+  if (isExplosion(cell)) return 'cell explosion'
+  if (isGoldenFood(cell)) return 'cell gold-food'
   if (isFood(cell)) return 'cell food'
   if (isBomb(cell)) return 'cell bomb'
   if (isObstacle(cell)) return 'cell obstacle'
   return 'cell'
+}
+
+function getSnakeEmoji(isHead: boolean) {
+  if (snakeSkin.value === 'snake') return isHead ? '🐍' : '🟢'
+  if (snakeSkin.value === 'dragon') return isHead ? '🐉' : '🟢'
+  if (snakeSkin.value === 'robot') return isHead ? '🤖' : '⚙️'
+  if (snakeSkin.value === 'cat') return isHead ? '😺' : '🐾'
+  if (snakeSkin.value === 'avatar' && !avatarImage.value) return isHead ? '🙂' : '🟢'
+  return ''
+}
+
+function shouldShowAvatarHead(cell: Position) {
+  return isSnakeHead(cell) && snakeSkin.value === 'avatar' && avatarImage.value !== ''
+}
+
+function getCellContent(cell: Position) {
+  if (isSnakeHead(cell)) return getSnakeEmoji(true)
+  if (isSnakeBody(cell)) return getSnakeEmoji(false)
+  if (isExplosion(cell)) return '💥'
+  if (isGoldenFood(cell)) return '💎'
+  if (isFood(cell)) return '🍎'
+  if (isBomb(cell)) return '💣'
+  if (isObstacle(cell)) return obstaclesHidden.value ? '' : '🧱'
+  return ''
 }
 
 function isBlockedForPath(p: Position) {
@@ -1165,6 +601,7 @@ function occupied(p: Position) {
   return (
     snake.value.some((part) => same(part, p)) ||
     same(food.value, p) ||
+    (goldenFood.value !== null && same(goldenFood.value, p)) ||
     obstacles.value.some((item) => same(item, p)) ||
     bombs.value.some((item) => same(item, p))
   )
@@ -1201,6 +638,25 @@ function createFood() {
   food.value = { x: 5, y: 5 }
 }
 
+function createGoldenFood() {
+  if (gameMode.value !== 'treasure') return
+
+  for (let i = 0; i < 400; i++) {
+    const candidate = randomPosition()
+
+    if (occupied(candidate)) continue
+    if (freeNeighborCount(candidate) < 1) continue
+
+    goldenFood.value = candidate
+    goldenFoodUntil.value = Date.now() + 8000
+    return
+  }
+}
+
+function nextBombExplodeTime() {
+  return Date.now() + 4000 + Math.floor(Math.random() * 6000)
+}
+
 function addSafeHazard(kind: 'obstacle' | 'bomb') {
   for (let i = 0; i < 400; i++) {
     const candidate = randomPosition()
@@ -1212,16 +668,19 @@ function addSafeHazard(kind: 'obstacle' | 'bomb') {
     if (kind === 'obstacle') {
       obstacles.value.push(candidate)
     } else {
-      bombs.value.push(candidate)
+      bombs.value.push({
+        id: bombIdSeed++,
+        x: candidate.x,
+        y: candidate.y,
+        explodeAt: nextBombExplodeTime(),
+      })
     }
 
     const stillHasPath = pathExists(snake.value[0]!, food.value)
     const headHasSpace = freeNeighborCount(snake.value[0]!) >= 2
     const foodHasSpace = freeNeighborCount(food.value) >= 1
 
-    if (stillHasPath && headHasSpace && foodHasSpace) {
-      return
-    }
+    if (stillHasPath && headHasSpace && foodHasSpace) return
 
     if (kind === 'obstacle') {
       obstacles.value.pop()
@@ -1229,6 +688,57 @@ function addSafeHazard(kind: 'obstacle' | 'bomb') {
       bombs.value.pop()
     }
   }
+}
+
+function getBlastArea(center: Position) {
+  const area: Position[] = []
+
+  for (let y = center.y - 1; y <= center.y + 1; y++) {
+    for (let x = center.x - 1; x <= center.x + 1; x++) {
+      const p = { x, y }
+
+      if (inBoard(p)) {
+        area.push(p)
+      }
+    }
+  }
+
+  return area
+}
+
+function triggerBombExplosion(bomb: Bomb) {
+  const area = getBlastArea(bomb)
+
+  bombs.value = bombs.value.filter((item) => item.id !== bomb.id)
+
+  const endAt = Date.now() + explosionDurationMs
+
+  for (const p of area) {
+    explosions.value.push({
+      id: explosionIdSeed++,
+      x: p.x,
+      y: p.y,
+      endAt,
+    })
+  }
+
+  const hitSnake = snake.value.some((part) => area.some((p) => same(p, part)))
+
+  if (hitSnake && status.value === 'playing' && !activeShield.value && !isInvincible.value) {
+    respawnAfterHit()
+  }
+}
+
+function checkBombs() {
+  if (status.value !== 'playing') return
+
+  const dueBombs = bombs.value.filter((bomb) => bomb.explodeAt <= Date.now())
+
+  for (const bomb of dueBombs) {
+    triggerBombExplosion(bomb)
+  }
+
+  explosions.value = explosions.value.filter((item) => item.endAt > Date.now())
 }
 
 function createRespawnSnake(length: number) {
@@ -1295,16 +805,17 @@ function clearSpawnZone() {
     const distance = Math.abs(item.x - spawn.x) + Math.abs(item.y - spawn.y)
     return distance > 2
   })
+
+  explosions.value = explosions.value.filter((item) => {
+    const distance = Math.abs(item.x - spawn.x) + Math.abs(item.y - spawn.y)
+    return distance > 2
+  })
 }
 
 function clearHazardsOnSnake() {
-  obstacles.value = obstacles.value.filter((item) => {
-    return !snake.value.some((part) => same(part, item))
-  })
-
-  bombs.value = bombs.value.filter((item) => {
-    return !snake.value.some((part) => same(part, item))
-  })
+  obstacles.value = obstacles.value.filter((item) => !snake.value.some((part) => same(part, item)))
+  bombs.value = bombs.value.filter((item) => !snake.value.some((part) => same(part, item)))
+  explosions.value = explosions.value.filter((item) => !snake.value.some((part) => same(part, item)))
 }
 
 function clearGameTimer() {
@@ -1326,21 +837,30 @@ function startTimer() {
   timer = window.setInterval(moveSnake, realSpeed)
 }
 
+function getInitialLives() {
+  if (gameMode.value === 'time') return 2
+  if (gameMode.value === 'portal') return 2
+  if (gameMode.value === 'survival') return 2
+  return 1
+}
+
 function resetGameData() {
   snake.value = [{ x: 10, y: 10 }]
   food.value = { x: 5, y: 5 }
+  goldenFood.value = null
   obstacles.value = []
   bombs.value = []
+  explosions.value = []
 
   direction.value = { x: 1, y: 0 }
   nextDirection.value = { x: 1, y: 0 }
 
   score.value = 0
-  lives.value = 1
+  lives.value = getInitialLives()
   level.value = 1
-  speed.value = baseSpeed
+  speed.value = baseSpeed.value
 
-  lastDifficultyScore.value = 0
+  lastDifficultyLevel.value = 0
   lastRewardScore.value = 0
 
   currentSkillKey.value = null
@@ -1350,7 +870,20 @@ function resetGameData() {
   slowUntil.value = 0
   hideObstacleUntil.value = 0
   invincibleUntil.value = 0
+  goldenFoodUntil.value = 0
+  timeAttackUntil.value = 0
+  survivalNextPointAt.value = 0
   wasSlowActive = false
+
+  if (gameMode.value === 'time') {
+    timeAttackUntil.value = Date.now() + timeModeStartMs
+  }
+
+  if (gameMode.value === 'survival') {
+    survivalNextPointAt.value = Date.now() + 4000
+    addSafeHazard('obstacle')
+    addSafeHazard('bomb')
+  }
 
   createFood()
 }
@@ -1425,20 +958,24 @@ function respawnAfterHit() {
 function removeHazardAt(target: Position) {
   obstacles.value = obstacles.value.filter((item) => !same(item, target))
   bombs.value = bombs.value.filter((item) => !same(item, target))
+  explosions.value = explosions.value.filter((item) => !same(item, target))
 }
 
-function handleCollision(target: Position, type: 'wall' | 'self' | 'obstacle' | 'bomb') {
-  if (isInvincible.value) {
-    return false
-  }
+function handleCollision(target: Position, type: 'wall' | 'self' | 'obstacle' | 'bomb' | 'explosion') {
+  if (isInvincible.value) return false
 
-  if ((type === 'obstacle' || type === 'bomb') && activeShield.value) {
+  if ((type === 'obstacle' || type === 'bomb' || type === 'explosion') && activeShield.value) {
     removeHazardAt(target)
     return false
   }
 
   if (type === 'bomb') {
-    bombs.value = bombs.value.filter((item) => !same(item, target))
+    const bomb = bombs.value.find((item) => same(item, target))
+
+    if (bomb) {
+      triggerBombExplosion(bomb)
+      return true
+    }
   }
 
   if (type === 'obstacle') {
@@ -1453,16 +990,23 @@ function increaseDifficulty() {
   const difficultyStep = Math.floor(score.value / 5)
 
   if (difficultyStep <= 0) return
-  if (score.value === lastDifficultyScore.value) return
+  if (difficultyStep <= lastDifficultyLevel.value) return
 
-  lastDifficultyScore.value = score.value
+  lastDifficultyLevel.value = difficultyStep
   level.value = difficultyStep + 1
 
-  speed.value = Math.max(58, baseSpeed - difficultyStep * 10)
+  const speedDrop =
+    gameMode.value === 'time'
+      ? difficultyStep * 12
+      : gameMode.value === 'survival'
+        ? difficultyStep * 11
+        : difficultyStep * 9
+
+  speed.value = Math.max(58, baseSpeed.value - speedDrop)
 
   addSafeHazard('obstacle')
 
-  if (difficultyStep >= 2) {
+  if (gameMode.value !== 'portal' && difficultyStep >= 2) {
     addSafeHazard('obstacle')
   }
 
@@ -1470,7 +1014,7 @@ function increaseDifficulty() {
     addSafeHazard('bomb')
   }
 
-  if (score.value >= 20 && difficultyStep % 2 === 0) {
+  if (gameMode.value === 'survival') {
     addSafeHazard('bomb')
   }
 
@@ -1508,6 +1052,7 @@ const rewards: { key: RewardKey; apply: () => void }[] = [
     key: 'clearBomb',
     apply: () => {
       bombs.value = []
+      explosions.value = []
     },
   },
   {
@@ -1536,9 +1081,9 @@ const rewards: { key: RewardKey; apply: () => void }[] = [
 ]
 
 function triggerReward() {
-  if (score.value === lastRewardScore.value) return
+  if (score.value < lastRewardScore.value + 10) return
 
-  lastRewardScore.value = score.value
+  lastRewardScore.value += 10
   clearGameTimer()
   status.value = 'reward'
 
@@ -1553,6 +1098,15 @@ function triggerReward() {
   }
 }
 
+function checkProgress() {
+  increaseDifficulty()
+  triggerReward()
+
+  if (gameMode.value === 'treasure' && score.value > 0 && score.value % 7 === 0 && !activeGoldenFood.value) {
+    createGoldenFood()
+  }
+}
+
 function claimReward() {
   status.value = 'playing'
   startTimer()
@@ -1560,14 +1114,26 @@ function claimReward() {
 
 function afterEatingFood() {
   score.value++
-  createFood()
 
-  if (score.value % 5 === 0) {
-    increaseDifficulty()
+  if (gameMode.value === 'time') {
+    timeAttackUntil.value += 3000
   }
 
-  if (score.value % 10 === 0) {
-    triggerReward()
+  createFood()
+  checkProgress()
+}
+
+function afterEatingGoldenFood() {
+  score.value += 3
+  goldenFood.value = null
+  goldenFoodUntil.value = 0
+  checkProgress()
+}
+
+function wrapPosition(p: Position) {
+  return {
+    x: (p.x + boardSize) % boardSize,
+    y: (p.y + boardSize) % boardSize,
   }
 }
 
@@ -1577,19 +1143,28 @@ function moveSnake() {
   direction.value = nextDirection.value
 
   const head = snake.value[0]!
-  const newHead = {
+  let newHead = {
     x: head.x + direction.value.x,
     y: head.y + direction.value.y,
   }
 
   if (!inBoard(newHead)) {
-    handleCollision(newHead, 'wall')
-    return
+    if (gameMode.value === 'portal') {
+      newHead = wrapPosition(newHead)
+    } else {
+      handleCollision(newHead, 'wall')
+      return
+    }
   }
 
   if (snake.value.some((part) => same(part, newHead))) {
     handleCollision(newHead, 'self')
     return
+  }
+
+  if (isExplosion(newHead)) {
+    const dead = handleCollision(newHead, 'explosion')
+    if (dead) return
   }
 
   if (!obstaclesHidden.value && obstacles.value.some((item) => same(item, newHead))) {
@@ -1604,7 +1179,9 @@ function moveSnake() {
 
   snake.value.unshift(newHead)
 
-  if (same(newHead, food.value)) {
+  if (activeGoldenFood.value && goldenFood.value !== null && same(newHead, goldenFood.value)) {
+    afterEatingGoldenFood()
+  } else if (same(newHead, food.value)) {
     afterEatingFood()
   } else {
     snake.value.pop()
@@ -1658,22 +1235,142 @@ function changeDirection(event: KeyboardEvent) {
   }
 }
 
+function handleModeClock() {
+  if (status.value !== 'playing') return
+
+  checkBombs()
+
+  if (gameMode.value === 'time' && timeLeft.value <= 0) {
+    endGame()
+    return
+  }
+
+  if (gameMode.value === 'survival' && survivalPointLeft.value <= 0) {
+    score.value++
+    survivalNextPointAt.value = Date.now() + 4000
+    checkProgress()
+  }
+
+  if (goldenFood.value !== null && goldenFoodLeft.value <= 0) {
+    goldenFood.value = null
+    goldenFoodUntil.value = 0
+  }
+
+  if (wasSlowActive && !activeSlow.value) {
+    wasSlowActive = false
+    startTimer()
+  }
+}
+
+function openAvatarMenu() {
+  avatarMenuOpen.value = true
+}
+
+function closeAvatarMenu() {
+  avatarMenuOpen.value = false
+  closeCamera()
+}
+
+async function openCamera() {
+  cameraMessage.value = ''
+
+  if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+    cameraMessage.value = getText('cameraDenied')
+    return
+  }
+
+  try {
+    cameraStream = await navigator.mediaDevices.getUserMedia({
+      video: {
+        width: 320,
+        height: 320,
+        facingMode: 'user',
+      },
+      audio: false,
+    })
+
+    if (videoRef.value) {
+      videoRef.value.srcObject = cameraStream
+      await videoRef.value.play()
+    }
+
+    cameraActive.value = true
+    cameraMessage.value = getText('cameraReady')
+  } catch {
+    cameraMessage.value = getText('cameraDenied')
+    cameraActive.value = false
+  }
+}
+
+function capturePhoto() {
+  const video = videoRef.value
+  const canvas = canvasRef.value
+
+  if (!video || !canvas) return
+
+  const size = 260
+  canvas.width = size
+  canvas.height = size
+
+  const ctx = canvas.getContext('2d')
+  if (!ctx) return
+
+  ctx.clearRect(0, 0, size, size)
+  ctx.save()
+  ctx.beginPath()
+  ctx.arc(size / 2, size / 2, size / 2, 0, Math.PI * 2)
+  ctx.clip()
+
+  const videoWidth = video.videoWidth || size
+  const videoHeight = video.videoHeight || size
+  const side = Math.min(videoWidth, videoHeight)
+  const sx = (videoWidth - side) / 2
+  const sy = (videoHeight - side) / 2
+
+  ctx.drawImage(video, sx, sy, side, side, 0, 0, size, size)
+  ctx.restore()
+
+  avatarImage.value = canvas.toDataURL('image/png')
+  snakeSkin.value = 'avatar'
+  cameraMessage.value = getText('cameraCaptured')
+}
+
+function closeCamera() {
+  if (cameraStream) {
+    for (const track of cameraStream.getTracks()) {
+      track.stop()
+    }
+  }
+
+  cameraStream = null
+  cameraActive.value = false
+
+  if (videoRef.value) {
+    videoRef.value.srcObject = null
+  }
+}
+
+function clearAvatar() {
+  avatarImage.value = ''
+
+  if (snakeSkin.value === 'avatar') {
+    snakeSkin.value = 'neon'
+  }
+}
+
 onMounted(() => {
   window.addEventListener('keydown', changeDirection, { passive: false })
 
   clockTimer = window.setInterval(() => {
     now.value = Date.now()
-
-    if (wasSlowActive && !activeSlow.value && status.value === 'playing') {
-      wasSlowActive = false
-      startTimer()
-    }
-  }, 100)
+    handleModeClock()
+  }, 200)
 })
 
 onBeforeUnmount(() => {
   window.removeEventListener('keydown', changeDirection)
   clearGameTimer()
+  closeCamera()
 
   if (clockTimer !== undefined) {
     clearInterval(clockTimer)
@@ -1696,15 +1393,35 @@ onBeforeUnmount(() => {
         </div>
 
         <div class="top-boxes">
-          <div class="language-box">
+          <div class="select-box">
             <span>{{ t.language }}</span>
             <select v-model="language">
-              <option
-                v-for="item in languageOptions"
-                :key="item.value"
-                :value="item.value"
-              >
+              <option v-for="item in languageOptions" :key="item.value" :value="item.value">
                 {{ item.label }}
+              </option>
+            </select>
+          </div>
+
+          <div class="select-box">
+            <span>{{ t.snakeStyle }}</span>
+            <select
+              v-model="snakeSkin"
+              :disabled="status === 'playing' || status === 'paused' || status === 'reward'"
+            >
+              <option v-for="item in snakeSkinOptions" :key="item.value" :value="item.value">
+                {{ item.icon }} {{ t[item.value] }}
+              </option>
+            </select>
+          </div>
+
+          <div class="select-box">
+            <span>{{ t.mode }}</span>
+            <select
+              v-model="gameMode"
+              :disabled="status === 'playing' || status === 'paused' || status === 'reward'"
+            >
+              <option v-for="item in modeOptions" :key="item.value" :value="item.value">
+                {{ item.icon }} {{ t[item.value] }}
               </option>
             </select>
           </div>
@@ -1716,6 +1433,21 @@ onBeforeUnmount(() => {
         </div>
       </header>
 
+      <div class="mode-showcase">
+        <button
+          v-for="item in modeOptions"
+          :key="item.value"
+          class="mode-card"
+          :class="{ selected: gameMode === item.value }"
+          :disabled="status === 'playing' || status === 'paused' || status === 'reward'"
+          @click="gameMode = item.value"
+        >
+          <span class="mode-icon">{{ item.icon }}</span>
+          <strong>{{ t[item.value] }}</strong>
+          <small>{{ getModeDesc(item.value) }}</small>
+        </button>
+      </div>
+
       <main class="game-layout">
         <div class="left-area">
           <div class="board-frame">
@@ -1724,27 +1456,21 @@ onBeforeUnmount(() => {
 
               <div class="life-bar">
                 <span class="life-label">{{ t.lives }}</span>
-                <span
-                  v-for="heart in lives"
-                  :key="heart"
-                  class="heart"
-                >
-                  ❤️
-                </span>
+                <span v-for="heart in lives" :key="heart" class="heart">❤️</span>
               </div>
 
               <span v-if="activeShield" class="skill-badge">{{ r.shield[0] }} {{ shieldLeft }}{{ t.second }}</span>
               <span v-else-if="activeSlow" class="skill-badge">{{ r.slow[0] }} {{ slowLeft }}{{ t.second }}</span>
               <span v-else-if="obstaclesHidden" class="skill-badge">{{ r.hideObstacle[0] }} {{ hideObstacleLeft }}{{ t.second }}</span>
+              <span v-else-if="activeGoldenFood" class="skill-badge">💎 {{ goldenFoodLeft }}{{ t.second }}</span>
               <span v-else class="live-dot"></span>
             </div>
 
             <div class="board">
-              <div
-                v-for="(cell, index) in cells"
-                :key="index"
-                :class="getCellClass(cell)"
-              ></div>
+              <div v-for="(cell, index) in cells" :key="index" :class="getCellClass(cell)">
+                <img v-if="shouldShowAvatarHead(cell)" :src="avatarImage" class="avatar-head" alt="avatar" />
+                <span v-else class="cell-content">{{ getCellContent(cell) }}</span>
+              </div>
             </div>
           </div>
 
@@ -1752,7 +1478,7 @@ onBeforeUnmount(() => {
             <div class="effect-panel">
               <h3>{{ t.activeEffects }}</h3>
 
-              <div v-if="activeShield || activeSlow || obstaclesHidden" class="effect-list">
+              <div v-if="activeShield || activeSlow || obstaclesHidden || activeGoldenFood" class="effect-list">
                 <div v-if="activeShield" class="effect-item shield-effect">
                   <strong>{{ r.shield[0] }}</strong>
                   <span>{{ shieldLeft }}{{ t.second }}</span>
@@ -1767,6 +1493,11 @@ onBeforeUnmount(() => {
                   <strong>{{ r.hideObstacle[0] }}</strong>
                   <span>{{ hideObstacleLeft }}{{ t.second }}</span>
                 </div>
+
+                <div v-if="activeGoldenFood" class="effect-item gold-effect">
+                  <strong>💎 {{ t.legendGoldFood }}</strong>
+                  <span>{{ goldenFoodLeft }}{{ t.second }}</span>
+                </div>
               </div>
 
               <p v-else class="no-effect">{{ t.noActiveEffect }}</p>
@@ -1776,20 +1507,11 @@ onBeforeUnmount(() => {
               <h3>{{ t.legend }}</h3>
 
               <div class="legend-list">
-                <div class="legend-item">
-                  <span class="legend-dot food-dot"></span>
-                  {{ t.legendFood }}
-                </div>
-
-                <div class="legend-item">
-                  <span class="legend-dot obstacle-dot"></span>
-                  {{ t.legendObstacle }}
-                </div>
-
-                <div class="legend-item">
-                  <span class="legend-dot bomb-dot"></span>
-                  {{ t.legendBomb }}
-                </div>
+                <div class="legend-item"><span class="legend-emoji">🍎</span>{{ t.legendFood }}</div>
+                <div class="legend-item"><span class="legend-emoji">💎</span>{{ t.legendGoldFood }}</div>
+                <div class="legend-item"><span class="legend-emoji">🧱</span>{{ t.legendObstacle }}</div>
+                <div class="legend-item"><span class="legend-emoji">💣</span>{{ t.legendBomb }}</div>
+                <div class="legend-item"><span class="legend-emoji">💥</span>{{ t.legendExplosion }}</div>
               </div>
             </div>
 
@@ -1797,16 +1519,14 @@ onBeforeUnmount(() => {
               <h3>{{ t.rules }}</h3>
               <p>{{ t.ruleFood }}</p>
               <p>{{ t.ruleHazard }}</p>
+              <p>{{ t.ruleBomb }}</p>
               <p>{{ t.ruleLevel }}</p>
               <p>{{ t.ruleReward }}</p>
+              <p>{{ t.ruleMode }}</p>
 
               <div class="skill-list-title">{{ t.allSkills }}</div>
               <div class="skill-list">
-                <span
-                  v-for="key in rewardKeys"
-                  :key="key"
-                  class="skill-pill"
-                >
+                <span v-for="key in rewardKeys" :key="key" class="skill-pill">
                   {{ r[key][0] }}
                 </span>
               </div>
@@ -1837,23 +1557,40 @@ onBeforeUnmount(() => {
             </div>
           </div>
 
+          <div class="mode-info-card">
+            <p>{{ t.modeFeature }}</p>
+            <strong>{{ t[gameMode] }}</strong>
+            <span>{{ modeDescription }}</span>
+          </div>
+
+          <button class="avatar-menu-button" @click="openAvatarMenu">
+            <span class="avatar-menu-icon">
+              <img v-if="avatarImage" :src="avatarImage" alt="avatar" />
+              <span v-else>📸</span>
+            </span>
+            <span>
+              <strong>{{ t.avatarMenu }}</strong>
+              <small>{{ avatarImage ? t.avatar : t.cameraTitle }}</small>
+            </span>
+          </button>
+
           <div class="current-skill-box">
             <p>{{ t.skill }}</p>
             <strong>{{ currentSkillName }}</strong>
           </div>
 
           <div class="info-box">
+            <p>{{ t.mode }}：{{ t[gameMode] }}</p>
+            <p>{{ t.snakeStyle }}：{{ t[snakeSkin] }}</p>
             <p>{{ t.speed }}：{{ snakeSpeedSeconds }} {{ t.secondPerStep }}</p>
             <p>{{ t.obstacles }}：{{ obstacles.length }}</p>
             <p>{{ t.bombs }}：{{ bombs.length }}</p>
+            <p v-if="gameMode === 'time'">{{ t.timeLeft }}：{{ timeLeft }}{{ t.second }}</p>
+            <p v-if="gameMode === 'survival'">{{ t.nextSurvivalPoint }}：{{ survivalPointLeft }}{{ t.second }}</p>
           </div>
 
           <div class="button-group">
-            <button
-              v-if="status === 'ready' || status === 'over'"
-              class="btn start"
-              @click="startGame"
-            >
+            <button v-if="status === 'ready' || status === 'over'" class="btn start" @click="startGame">
               {{ t.start }}
             </button>
 
@@ -1905,6 +1642,72 @@ onBeforeUnmount(() => {
         </aside>
       </main>
     </section>
+
+    <div v-if="avatarMenuOpen" class="avatar-overlay">
+      <div class="avatar-modal">
+        <div class="avatar-modal-header">
+          <div>
+            <p>{{ t.avatarMenu }}</p>
+            <h2>{{ t.cameraTitle }}</h2>
+          </div>
+
+          <button class="avatar-close-x" @click="closeAvatarMenu">×</button>
+        </div>
+
+        <div class="avatar-modal-body">
+          <div class="camera-large-preview">
+            <video
+              ref="videoRef"
+              class="camera-video"
+              autoplay
+              playsinline
+              muted
+              :class="{ hidden: !cameraActive }"
+            ></video>
+
+            <div v-if="!cameraActive && !avatarImage" class="camera-placeholder-large">
+              📸
+            </div>
+
+            <img
+              v-if="avatarImage && !cameraActive"
+              :src="avatarImage"
+              class="avatar-preview-large"
+              alt="avatar preview"
+            />
+
+            <canvas ref="canvasRef" class="hidden-canvas"></canvas>
+          </div>
+
+          <div class="avatar-modal-info">
+            <p>{{ t.cameraHint }}</p>
+            <p v-if="cameraMessage" class="camera-message">{{ cameraMessage }}</p>
+
+            <div class="avatar-action-grid">
+              <button class="mini-btn camera-open" @click="openCamera">
+                {{ t.openCamera }}
+              </button>
+
+              <button class="mini-btn camera-capture" :disabled="!cameraActive" @click="capturePhoto">
+                {{ t.capturePhoto }}
+              </button>
+
+              <button class="mini-btn camera-close" @click="closeCamera">
+                {{ t.closeCamera }}
+              </button>
+
+              <button class="mini-btn camera-clear" @click="clearAvatar">
+                {{ t.clearAvatar }}
+              </button>
+            </div>
+
+            <button class="btn avatar-done" @click="closeAvatarMenu">
+              {{ t.closeMenu }}
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
 
     <div v-if="status === 'reward'" class="reward-overlay">
       <div class="reward-card big-reward-card">
@@ -1979,31 +1782,32 @@ onBeforeUnmount(() => {
   display: flex;
   justify-content: center;
   align-items: center;
-  padding: 18px;
+  padding: 16px;
   color: white;
   font-family:
     Arial,
     "Microsoft JhengHei",
     sans-serif;
   background:
-    radial-gradient(circle at top left, #7c3aed 0, transparent 28%),
-    radial-gradient(circle at bottom right, #06b6d4 0, transparent 28%),
-    linear-gradient(135deg, #111827, #1e1b4b, #0f172a);
+    radial-gradient(circle at 10% 10%, rgba(236, 72, 153, 0.55), transparent 28%),
+    radial-gradient(circle at 90% 80%, rgba(34, 211, 238, 0.5), transparent 28%),
+    radial-gradient(circle at 50% 20%, rgba(250, 204, 21, 0.18), transparent 20%),
+    linear-gradient(135deg, #020617, #111827, #1e1b4b, #0f172a);
 }
 
 .background-circle {
   position: absolute;
   border-radius: 50%;
-  filter: blur(4px);
-  opacity: 0.45;
+  filter: blur(5px);
+  opacity: 0.42;
   animation: float 5s infinite alternate ease-in-out;
 }
 
 .circle-one {
   width: 150px;
   height: 150px;
-  left: 8%;
-  top: 12%;
+  left: 7%;
+  top: 13%;
   background: #f97316;
 }
 
@@ -2011,15 +1815,15 @@ onBeforeUnmount(() => {
   width: 220px;
   height: 220px;
   right: 8%;
-  bottom: 10%;
+  bottom: 8%;
   background: #22c55e;
 }
 
 .circle-three {
-  width: 110px;
-  height: 110px;
-  right: 20%;
-  top: 14%;
+  width: 120px;
+  height: 120px;
+  right: 22%;
+  top: 11%;
   background: #ec4899;
 }
 
@@ -2036,12 +1840,14 @@ onBeforeUnmount(() => {
 .game-shell {
   position: relative;
   z-index: 1;
-  width: 1210px;
-  padding: 20px;
+  width: 1320px;
+  padding: 18px;
   border: 1px solid rgba(255, 255, 255, 0.18);
-  border-radius: 26px;
-  background: rgba(15, 23, 42, 0.78);
-  box-shadow: 0 30px 80px rgba(0, 0, 0, 0.45);
+  border-radius: 28px;
+  background:
+    linear-gradient(135deg, rgba(15, 23, 42, 0.88), rgba(30, 41, 59, 0.72)),
+    rgba(15, 23, 42, 0.78);
+  box-shadow: 0 30px 80px rgba(0, 0, 0, 0.48);
   backdrop-filter: blur(18px);
 }
 
@@ -2050,7 +1856,7 @@ onBeforeUnmount(() => {
   justify-content: space-between;
   align-items: center;
   gap: 22px;
-  margin-bottom: 16px;
+  margin-bottom: 14px;
 }
 
 .tag {
@@ -2058,7 +1864,7 @@ onBeforeUnmount(() => {
   margin: 0 0 6px;
   padding: 5px 11px;
   color: #67e8f9;
-  background: rgba(8, 145, 178, 0.2);
+  background: rgba(8, 145, 178, 0.22);
   border: 1px solid rgba(103, 232, 249, 0.4);
   border-radius: 999px;
   font-size: 13px;
@@ -2067,7 +1873,7 @@ onBeforeUnmount(() => {
 
 h1 {
   margin: 0;
-  font-size: 38px;
+  font-size: 40px;
   letter-spacing: 1px;
   background: linear-gradient(90deg, #facc15, #fb7185, #38bdf8, #4ade80);
   -webkit-background-clip: text;
@@ -2082,43 +1888,48 @@ h1 {
 
 .top-boxes {
   display: flex;
-  gap: 12px;
+  gap: 10px;
   align-items: stretch;
 }
 
-.language-box {
-  width: 205px;
-  padding: 13px;
+.select-box {
+  width: 145px;
+  padding: 11px;
   border-radius: 18px;
   text-align: center;
-  background: linear-gradient(135deg, #7c2d12, #be185d);
-  box-shadow: 0 12px 30px rgba(244, 114, 182, 0.18);
+  background: linear-gradient(135deg, rgba(124, 45, 18, 0.95), rgba(190, 24, 93, 0.95));
+  box-shadow: 0 12px 30px rgba(244, 114, 182, 0.16);
 }
 
-.language-box span,
+.select-box span,
 .status-box span {
   display: block;
   color: #ffe4e6;
-  font-size: 13px;
+  font-size: 12px;
   margin-bottom: 7px;
 }
 
-.language-box select {
+.select-box select {
   width: 100%;
-  padding: 9px 10px;
+  padding: 8px 9px;
   border: none;
   outline: none;
   border-radius: 12px;
   color: #0f172a;
   background: #fff7ed;
-  font-size: 14px;
+  font-size: 13px;
   font-weight: bold;
   cursor: pointer;
 }
 
+.select-box select:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
 .status-box {
-  width: 140px;
-  padding: 13px;
+  width: 118px;
+  padding: 11px;
   border-radius: 18px;
   text-align: center;
   background: linear-gradient(135deg, #312e81, #0f766e);
@@ -2126,7 +1937,67 @@ h1 {
 }
 
 .status-box strong {
-  font-size: 21px;
+  font-size: 19px;
+}
+
+.mode-showcase {
+  display: grid;
+  grid-template-columns: repeat(5, 1fr);
+  gap: 10px;
+  margin-bottom: 14px;
+}
+
+.mode-card {
+  min-height: 92px;
+  padding: 12px;
+  border: 1px solid rgba(148, 163, 184, 0.24);
+  border-radius: 20px;
+  color: white;
+  text-align: left;
+  background:
+    linear-gradient(135deg, rgba(30, 41, 59, 0.72), rgba(15, 23, 42, 0.9));
+  cursor: pointer;
+  transition:
+    transform 0.15s,
+    border 0.15s,
+    box-shadow 0.15s;
+}
+
+.mode-card:hover {
+  transform: translateY(-3px);
+  border-color: rgba(56, 189, 248, 0.7);
+  box-shadow: 0 15px 28px rgba(56, 189, 248, 0.16);
+}
+
+.mode-card:disabled {
+  cursor: not-allowed;
+  opacity: 0.7;
+}
+
+.mode-card.selected {
+  border-color: rgba(250, 204, 21, 0.85);
+  box-shadow: 0 0 26px rgba(250, 204, 21, 0.22);
+  background:
+    linear-gradient(135deg, rgba(88, 28, 135, 0.88), rgba(190, 24, 93, 0.78));
+}
+
+.mode-icon {
+  display: block;
+  font-size: 24px;
+  margin-bottom: 5px;
+}
+
+.mode-card strong {
+  display: block;
+  margin-bottom: 4px;
+  font-size: 15px;
+}
+
+.mode-card small {
+  display: block;
+  color: #cbd5e1;
+  font-size: 12px;
+  line-height: 1.35;
 }
 
 .game-layout {
@@ -2143,11 +2014,9 @@ h1 {
 .board-frame {
   padding: 14px;
   border-radius: 24px;
-  background: linear-gradient(
-    135deg,
-    rgba(30, 41, 59, 0.9),
-    rgba(15, 23, 42, 0.9)
-  );
+  background:
+    radial-gradient(circle at top, rgba(56, 189, 248, 0.16), transparent 35%),
+    linear-gradient(135deg, rgba(30, 41, 59, 0.92), rgba(15, 23, 42, 0.92));
   border: 1px solid rgba(148, 163, 184, 0.25);
 }
 
@@ -2232,8 +2101,28 @@ h1 {
 }
 
 .cell {
+  position: relative;
+  display: grid;
+  place-items: center;
   border: 1px solid rgba(51, 65, 85, 0.7);
   background: rgba(15, 23, 42, 0.72);
+  font-size: 20px;
+  line-height: 1;
+}
+
+.cell-content {
+  position: relative;
+  z-index: 2;
+  filter: drop-shadow(0 0 5px rgba(255, 255, 255, 0.45));
+}
+
+.avatar-head {
+  width: 92%;
+  height: 92%;
+  object-fit: cover;
+  border-radius: 50%;
+  border: 2px solid #fef08a;
+  box-shadow: 0 0 12px #facc15;
 }
 
 .snake-head {
@@ -2266,6 +2155,13 @@ h1 {
   animation: foodPulse 0.75s infinite alternate;
 }
 
+.gold-food {
+  border-radius: 50%;
+  background: radial-gradient(circle at 30% 30%, #ffffff, #facc15 35%, #ca8a04 70%);
+  box-shadow: 0 0 22px #facc15;
+  animation: goldPulse 0.75s infinite alternate;
+}
+
 .obstacle {
   border-radius: 8px;
   background:
@@ -2287,6 +2183,16 @@ h1 {
   animation: bombBlink 0.55s infinite alternate;
 }
 
+.explosion {
+  border-radius: 6px;
+  background:
+    radial-gradient(circle, #ffffff 0 8%, #facc15 20%, #f97316 50%, #dc2626 80%);
+  box-shadow:
+    0 0 22px #f97316,
+    0 0 18px #ef4444 inset;
+  animation: explosionPulse 0.28s infinite alternate;
+}
+
 @keyframes foodPulse {
   from {
     transform: scale(0.78);
@@ -2294,6 +2200,16 @@ h1 {
 
   to {
     transform: scale(1.05);
+  }
+}
+
+@keyframes goldPulse {
+  from {
+    transform: scale(0.8) rotate(0deg);
+  }
+
+  to {
+    transform: scale(1.1) rotate(8deg);
   }
 }
 
@@ -2306,6 +2222,18 @@ h1 {
   to {
     transform: scale(1.08);
     filter: brightness(1.45);
+  }
+}
+
+@keyframes explosionPulse {
+  from {
+    transform: scale(0.9);
+    filter: brightness(1);
+  }
+
+  to {
+    transform: scale(1.12);
+    filter: brightness(1.5);
   }
 }
 
@@ -2378,6 +2306,11 @@ h1 {
   color: #dcfce7;
 }
 
+.gold-effect {
+  background: rgba(250, 204, 21, 0.25);
+  color: #fef9c3;
+}
+
 .no-effect {
   margin: 0;
   color: #cbd5e1;
@@ -2397,28 +2330,14 @@ h1 {
   font-size: 14px;
 }
 
-.legend-dot {
-  width: 22px;
-  height: 22px;
-  display: inline-block;
-  border-radius: 50%;
-}
-
-.food-dot {
-  background: radial-gradient(circle, #ffffff, #fb7185, #e11d48);
-  box-shadow: 0 0 12px #fb7185;
-}
-
-.obstacle-dot {
-  border-radius: 7px;
-  background: linear-gradient(135deg, #c084fc, #7e22ce, #3b0764);
-  box-shadow: 0 0 10px rgba(168, 85, 247, 0.5);
-}
-
-.bomb-dot {
-  background: radial-gradient(circle, #ffffff, #67e8f9, #0284c7, #020617);
-  border: 2px solid #bae6fd;
-  box-shadow: 0 0 12px #38bdf8;
+.legend-emoji {
+  width: 28px;
+  height: 28px;
+  display: grid;
+  place-items: center;
+  border-radius: 10px;
+  background: rgba(15, 23, 42, 0.8);
+  font-size: 20px;
 }
 
 .rules-panel p {
@@ -2452,7 +2371,7 @@ h1 {
 }
 
 .panel {
-  width: 330px;
+  width: 345px;
   padding: 18px;
   border-radius: 24px;
   background: rgba(2, 6, 23, 0.65);
@@ -2500,6 +2419,89 @@ h1 {
   display: block;
   margin-top: 8px;
   font-size: 28px;
+}
+
+.mode-info-card {
+  margin-top: 12px;
+  padding: 14px;
+  border-radius: 18px;
+  background:
+    radial-gradient(circle at top right, rgba(250, 204, 21, 0.22), transparent 40%),
+    linear-gradient(135deg, rgba(88, 28, 135, 0.9), rgba(15, 23, 42, 0.85));
+  border: 1px solid rgba(250, 204, 21, 0.25);
+}
+
+.mode-info-card p {
+  margin: 0 0 7px;
+  color: #fde68a;
+  font-size: 13px;
+}
+
+.mode-info-card strong {
+  display: block;
+  margin-bottom: 6px;
+  font-size: 20px;
+}
+
+.mode-info-card span {
+  color: #dbeafe;
+  font-size: 13px;
+  line-height: 1.4;
+}
+
+.avatar-menu-button {
+  width: 100%;
+  margin-top: 12px;
+  padding: 12px;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  border: 1px solid rgba(125, 211, 252, 0.28);
+  border-radius: 18px;
+  color: white;
+  text-align: left;
+  cursor: pointer;
+  background:
+    radial-gradient(circle at top left, rgba(56, 189, 248, 0.26), transparent 45%),
+    rgba(30, 41, 59, 0.75);
+  transition:
+    transform 0.15s,
+    box-shadow 0.15s;
+}
+
+.avatar-menu-button:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 12px 25px rgba(56, 189, 248, 0.18);
+}
+
+.avatar-menu-icon {
+  width: 48px;
+  height: 48px;
+  display: grid;
+  place-items: center;
+  overflow: hidden;
+  border-radius: 50%;
+  background: rgba(15, 23, 42, 0.8);
+  border: 2px solid rgba(250, 204, 21, 0.7);
+  font-size: 24px;
+}
+
+.avatar-menu-icon img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.avatar-menu-button strong {
+  display: block;
+  font-size: 15px;
+}
+
+.avatar-menu-button small {
+  display: block;
+  margin-top: 3px;
+  color: #cbd5e1;
+  font-size: 12px;
 }
 
 .current-skill-box {
@@ -2639,7 +2641,8 @@ h1 {
 }
 
 .reward-overlay,
-.game-over-overlay {
+.game-over-overlay,
+.avatar-overlay {
   position: fixed;
   inset: 0;
   z-index: 20;
@@ -2647,6 +2650,157 @@ h1 {
   place-items: center;
   background: rgba(2, 6, 23, 0.72);
   backdrop-filter: blur(8px);
+}
+
+.avatar-overlay {
+  z-index: 25;
+}
+
+.avatar-modal {
+  width: 720px;
+  max-width: 92vw;
+  padding: 24px;
+  border-radius: 30px;
+  background:
+    radial-gradient(circle at top left, rgba(56, 189, 248, 0.28), transparent 42%),
+    linear-gradient(135deg, rgba(15, 23, 42, 0.97), rgba(49, 46, 129, 0.95));
+  border: 1px solid rgba(255, 255, 255, 0.22);
+  box-shadow: 0 30px 90px rgba(0, 0, 0, 0.62);
+}
+
+.avatar-modal-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 20px;
+  margin-bottom: 18px;
+}
+
+.avatar-modal-header p {
+  margin: 0 0 6px;
+  color: #fde68a;
+  font-weight: bold;
+  font-size: 14px;
+}
+
+.avatar-modal-header h2 {
+  margin: 0;
+  font-size: 34px;
+  background: linear-gradient(90deg, #facc15, #38bdf8, #fb7185);
+  -webkit-background-clip: text;
+  color: transparent;
+}
+
+.avatar-close-x {
+  width: 40px;
+  height: 40px;
+  border: none;
+  border-radius: 50%;
+  color: white;
+  background: rgba(239, 68, 68, 0.82);
+  font-size: 28px;
+  cursor: pointer;
+}
+
+.avatar-modal-body {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 18px;
+}
+
+.camera-large-preview {
+  height: 330px;
+  display: grid;
+  place-items: center;
+  overflow: hidden;
+  border-radius: 26px;
+  background: rgba(15, 23, 42, 0.88);
+  border: 1px solid rgba(148, 163, 184, 0.28);
+}
+
+.camera-video {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.camera-placeholder-large {
+  font-size: 80px;
+  opacity: 0.8;
+}
+
+.avatar-preview-large {
+  width: 235px;
+  height: 235px;
+  object-fit: cover;
+  border-radius: 50%;
+  border: 5px solid #facc15;
+  box-shadow: 0 0 30px rgba(250, 204, 21, 0.65);
+}
+
+.avatar-modal-info {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+}
+
+.avatar-modal-info p {
+  margin: 0 0 12px;
+  color: #dbeafe;
+  line-height: 1.5;
+}
+
+.camera-message {
+  color: #fde68a !important;
+  font-weight: bold;
+}
+
+.avatar-action-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+}
+
+.mini-btn {
+  border: none;
+  padding: 11px 8px;
+  border-radius: 13px;
+  color: white;
+  font-size: 13px;
+  font-weight: bold;
+  cursor: pointer;
+}
+
+.mini-btn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.camera-open {
+  background: linear-gradient(135deg, #06b6d4, #2563eb);
+}
+
+.camera-capture {
+  background: linear-gradient(135deg, #22c55e, #16a34a);
+}
+
+.camera-close {
+  background: linear-gradient(135deg, #f97316, #c2410c);
+}
+
+.camera-clear {
+  background: linear-gradient(135deg, #ef4444, #be123c);
+}
+
+.avatar-done {
+  width: 100%;
+  margin-top: 14px;
+  background: linear-gradient(135deg, #8b5cf6, #ec4899);
+}
+
+.hidden,
+.hidden-canvas {
+  display: none;
 }
 
 .reward-card,
@@ -2862,12 +3016,18 @@ h1 {
 
   .top-boxes {
     width: 100%;
+    flex-wrap: wrap;
   }
 
-  .language-box,
+  .select-box,
   .status-box {
     flex: 1;
     width: auto;
+    min-width: 140px;
+  }
+
+  .mode-showcase {
+    grid-template-columns: 1fr;
   }
 
   .game-layout {
@@ -2893,8 +3053,13 @@ h1 {
   }
 
   .big-reward-card,
-  .game-over-card {
+  .game-over-card,
+  .avatar-modal {
     width: 92%;
+  }
+
+  .avatar-modal-body {
+    grid-template-columns: 1fr;
   }
 }
 </style>
